@@ -4,12 +4,12 @@ import {
   IconCloudUpload, IconRefresh, IconPlus, IconX, IconFileSpreadsheet,
   IconTable, IconBuilding, IconCurrencyYen, IconThermometer,
   IconPackage, IconCalendar, IconSnowflake, IconSun, IconCircleCheck,
-  IconUpload, IconDownload,
+  IconUpload, IconDownload, IconPencil, IconLink,
 } from '@tabler/icons-react'
 import {
   getExporters, createExporter,
-  getBreweries, createBrewery,
-  getProducts, createProduct,
+  getBreweries, createBrewery, bulkCreateBreweries,
+  getProducts, createProduct, updateProduct, bulkCreateProducts,
   getTiers, updateTier, getContainerSpecs, updateContainerSpec,
   getExporterProducts, bulkCreateExporterProducts,
   getLatestFxRates, getFxRates, createFxRate,
@@ -47,9 +47,10 @@ interface UploadModalProps {
   templateExample: string
   onClose: () => void
   onSubmit: (rows: string[][]) => Promise<string>
+  options?: React.ReactNode
 }
 
-function UploadModal({ title, templateHeader, templateExample, onClose, onSubmit }: UploadModalProps) {
+function UploadModal({ title, templateHeader, templateExample, onClose, onSubmit, options }: UploadModalProps) {
   const [csv, setCsv] = useState('')
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState('')
@@ -74,8 +75,13 @@ function UploadModal({ title, templateHeader, templateExample, onClose, onSubmit
                /^[A-Z0-9]/.test(first)
       })
 
+      const csvCell = (c: string | number | undefined) => {
+        const s = String(c ?? '').trim()
+        return (s.includes(',') || s.includes('"') || s.includes('\n'))
+          ? `"${s.replace(/"/g, '""')}"` : s
+      }
       const csvText = dataRows
-        .map(r => r.map(c => String(c ?? '').trim()).join(','))
+        .map(r => r.map(csvCell).join(','))
         .join('\n')
       setCsv(csvText)
     } catch (err) {
@@ -84,9 +90,32 @@ function UploadModal({ title, templateHeader, templateExample, onClose, onSubmit
     e.target.value = ''
   }
 
+  const parseCSV = (text: string): string[][] => {
+    const result: string[][] = []
+    for (const line of text.trim().split('\n')) {
+      if (!line.trim()) continue
+      const row: string[] = []
+      let cur = '', inQ = false
+      for (let i = 0; i < line.length; i++) {
+        const ch = line[i]
+        if (inQ) {
+          if (ch === '"' && line[i + 1] === '"') { cur += '"'; i++ }
+          else if (ch === '"') inQ = false
+          else cur += ch
+        } else {
+          if (ch === '"') inQ = true
+          else if (ch === ',') { row.push(cur.trim()); cur = '' }
+          else cur += ch
+        }
+      }
+      row.push(cur.trim())
+      result.push(row)
+    }
+    return result
+  }
+
   const handleSubmit = async () => {
-    const lines = csv.trim().split('\n').filter(l => l.trim())
-    const rows  = lines.map(l => l.split(',').map(c => c.trim()))
+    const rows = parseCSV(csv)
     setLoading(true)
     try {
       const msg = await onSubmit(rows)
@@ -123,6 +152,8 @@ function UploadModal({ title, templateHeader, templateExample, onClose, onSubmit
           <div style={{ color: 'var(--text-secondary)', marginBottom: 2 }}># {templateHeader}</div>
           {templateExample}
         </div>
+
+        {options && <div style={{ marginBottom: 8 }}>{options}</div>}
 
         <div className="form-label" style={{ marginBottom: 4 }}>직접 붙여넣기 또는 파일 선택 후 내용 확인</div>
         <textarea
@@ -266,15 +297,23 @@ function BreweryModal({ onClose, onSaved }: { onClose: () => void; onSaved: () =
   )
 }
 
-// ── 상품 등록 모달 ────────────────────────────────────────────────────────────
+// ── 상품 등록/수정 모달 ──────────────────────────────────────────────────────
 function ProductModal({
-  breweries, tiers, onClose, onSaved,
-}: { breweries: Brewery[]; tiers: TemperatureTier[]; onClose: () => void; onSaved: () => void }) {
+  breweries, tiers, product, onClose, onSaved,
+}: { breweries: Brewery[]; tiers: TemperatureTier[]; product?: Product; onClose: () => void; onSaved: () => void }) {
+  const isEdit = !!product
   const [form, setForm] = useState({
-    product_code: '', name_ja: '', name_ko: '',
-    brewery_id: '' as number | '',
-    tier_id: tiers[0]?.tier_id ?? '' as number | '',
-    boxes_per_pallet: 40, volume_ml: '', alcohol_pct: '',
+    product_code: product?.product_code ?? '',
+    name_ja:      product?.name_ja ?? '',
+    name_ko:      product?.name_ko ?? '',
+    brewery_id:   (product?.brewery_id ?? '') as number | '',
+    tier_id:      (product?.tier_id ?? tiers[0]?.tier_id ?? '') as number | '',
+    product_type: product?.product_type ?? 'regular',
+    boxes_per_pallet: product?.boxes_per_pallet ?? 40,
+    boxes_per_layer:  product?.boxes_per_layer ?? 10,
+    bottles_per_box:  product?.bottles_per_box ?? 12,
+    volume_ml:    product?.volume_ml != null ? String(product.volume_ml) : '',
+    alcohol_pct:  product?.alcohol_pct != null ? String(product.alcohol_pct) : '',
   })
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState('')
@@ -282,21 +321,42 @@ function ProductModal({
     setForm(f => ({ ...f, [k]: e.target.value }))
 
   const handleSave = async () => {
-    if (!form.product_code.trim() || !form.name_ja.trim() || !form.tier_id) {
-      setErr('상품코드·상품명(일)·온도대는 필수입니다'); return
+    if (!form.name_ja.trim() || !form.tier_id) {
+      setErr('상품명(일)·온도대는 필수입니다'); return
+    }
+    if (!isEdit && !form.product_code.trim()) {
+      setErr('상품코드는 필수입니다'); return
     }
     setLoading(true); setErr('')
     try {
-      await createProduct({
-        product_code: form.product_code.trim(),
-        name_ja: form.name_ja.trim(),
-        name_ko: form.name_ko.trim() || undefined,
-        brewery_id: form.brewery_id ? Number(form.brewery_id) : undefined,
-        tier_id: Number(form.tier_id),
-        boxes_per_pallet: Number(form.boxes_per_pallet) || 40,
-        volume_ml: form.volume_ml ? Number(form.volume_ml) : undefined,
-        alcohol_pct: form.alcohol_pct ? Number(form.alcohol_pct) : undefined,
-      })
+      if (isEdit) {
+        await updateProduct(product!.product_id, {
+          name_ja:          form.name_ja.trim(),
+          name_ko:          form.name_ko.trim() || undefined,
+          brewery_id:       form.brewery_id ? Number(form.brewery_id) : undefined,
+          tier_id:          Number(form.tier_id),
+          product_type:     form.product_type,
+          boxes_per_pallet: Number(form.boxes_per_pallet) || 40,
+          boxes_per_layer:  Number(form.boxes_per_layer) || 10,
+          bottles_per_box:  Number(form.bottles_per_box) || 12,
+          volume_ml:        form.volume_ml ? Number(form.volume_ml) : undefined,
+          alcohol_pct:      form.alcohol_pct ? Number(form.alcohol_pct) : undefined,
+        })
+      } else {
+        await createProduct({
+          product_code:     form.product_code.trim(),
+          name_ja:          form.name_ja.trim(),
+          name_ko:          form.name_ko.trim() || undefined,
+          brewery_id:       form.brewery_id ? Number(form.brewery_id) : undefined,
+          tier_id:          Number(form.tier_id),
+          product_type:     form.product_type,
+          boxes_per_pallet: Number(form.boxes_per_pallet) || 40,
+          boxes_per_layer:  Number(form.boxes_per_layer) || 10,
+          bottles_per_box:  Number(form.bottles_per_box) || 12,
+          volume_ml:        form.volume_ml ? Number(form.volume_ml) : undefined,
+          alcohol_pct:      form.alcohol_pct ? Number(form.alcohol_pct) : undefined,
+        })
+      }
       onSaved(); onClose()
     } catch (e: unknown) { setErr(e instanceof Error ? e.message : '저장 실패') }
     finally { setLoading(false) }
@@ -306,14 +366,15 @@ function ProductModal({
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal-box" style={{ width: 500 }} onClick={e => e.stopPropagation()}>
         <div className="modal-header">
-          <span className="modal-title">상품 추가</span>
+          <span className="modal-title">{isEdit ? '상품 수정' : '상품 추가'}</span>
           <button className="btn" style={{ padding: '2px 8px' }} onClick={onClose}><IconX size={13} /></button>
         </div>
         <div style={{ display: 'grid', gap: 10 }}>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
             <div className="form-field">
               <label className="form-label">상품코드 *</label>
-              <input className="pm-input" placeholder="N0010000" value={form.product_code} onChange={set('product_code')} />
+              <input className="pm-input" placeholder="N0010000" value={form.product_code}
+                onChange={set('product_code')} disabled={isEdit} style={isEdit ? { background: 'var(--bg-secondary)', color: 'var(--text-tertiary)' } : {}} />
             </div>
             <div className="form-field">
               <label className="form-label">온도대 *</label>
@@ -331,21 +392,46 @@ function ProductModal({
             <label className="form-label">상품명 (한국어)</label>
             <input className="pm-input" placeholder="닷사이 준마이다이긴죠45" value={form.name_ko} onChange={set('name_ko')} />
           </div>
-          <div className="form-field">
-            <label className="form-label">양조장</label>
-            <select className="pm-select" value={form.brewery_id} onChange={set('brewery_id')} style={{ width: '100%' }}>
-              <option value="">— 선택 안함 —</option>
-              {breweries.map(b => <option key={b.brewery_id} value={b.brewery_id}>{b.name}</option>)}
-            </select>
+          <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 8 }}>
+            <div className="form-field">
+              <label className="form-label">양조장</label>
+              <select className="pm-select" value={form.brewery_id} onChange={set('brewery_id')} style={{ width: '100%' }}>
+                <option value="">— 선택 안함 —</option>
+                {breweries.map(b => <option key={b.brewery_id} value={b.brewery_id}>{b.name}</option>)}
+              </select>
+            </div>
+            <div className="form-field">
+              <label className="form-label">제품 유형</label>
+              <select className="pm-select" value={form.product_type} onChange={set('product_type')} style={{ width: '100%' }}>
+                <option value="regular">정규</option>
+                <option value="spot">스팟</option>
+                <option value="pb">PB</option>
+              </select>
+            </div>
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
             <div className="form-field">
+              <label className="form-label">단당 박스</label>
+              <input className="pm-input" type="number" min={1} value={form.boxes_per_layer} onChange={set('boxes_per_layer')} />
+            </div>
+            <div className="form-field">
               <label className="form-label">팔레트당 박스</label>
-              <input className="pm-input" type="number" value={form.boxes_per_pallet} onChange={set('boxes_per_pallet')} />
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                <input className="pm-input" type="number" min={1} value={form.boxes_per_pallet} onChange={set('boxes_per_pallet')} style={{ flex: 1 }} />
+                <span style={{ fontSize: 10, color: 'var(--text-tertiary)', whiteSpace: 'nowrap' }}>
+                  {form.boxes_per_layer > 0 ? `${Math.round(Number(form.boxes_per_pallet) / Number(form.boxes_per_layer))}단` : ''}
+                </span>
+              </div>
             </div>
             <div className="form-field">
               <label className="form-label">용량(ml)</label>
               <input className="pm-input" type="number" placeholder="720" value={form.volume_ml} onChange={set('volume_ml')} />
+            </div>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+            <div className="form-field">
+              <label className="form-label">박스당 병수</label>
+              <input className="pm-input" type="number" min={1} value={form.bottles_per_box} onChange={set('bottles_per_box')} />
             </div>
             <div className="form-field">
               <label className="form-label">도수(%)</label>
@@ -357,7 +443,7 @@ function ProductModal({
         <div className="modal-footer">
           <button className="btn" onClick={onClose}>취소</button>
           <button className="btn btn-primary" onClick={handleSave} disabled={loading}>
-            {loading ? '저장 중…' : <><IconPlus size={13} /> 추가</>}
+            {loading ? '저장 중…' : isEdit ? <><IconPencil size={13} /> 저장</> : <><IconPlus size={13} /> 추가</>}
           </button>
         </div>
       </div>
@@ -367,9 +453,9 @@ function ProductModal({
 
 // ── 수출자↔상품 매핑 모달 ────────────────────────────────────────────────────
 function MappingModal({
-  exporters, onClose, onSaved,
-}: { exporters: Exporter[]; onClose: () => void; onSaved: () => void }) {
-  const [exporterId, setExporterId] = useState<number | ''>(exporters[0]?.exporter_id ?? '')
+  exporters, defaultExporterId, onClose, onSaved,
+}: { exporters: Exporter[]; defaultExporterId?: number; onClose: () => void; onSaved: () => void }) {
+  const [exporterId, setExporterId] = useState<number | ''>(defaultExporterId ?? exporters[0]?.exporter_id ?? '')
   const [codes, setCodes] = useState('')
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<{ created: number; skipped: number; errors: string[] } | null>(null)
@@ -852,11 +938,17 @@ export default function SetupPage() {
   const [invSummary, setInvSummary] = useState<InvLotSummary | null>(null)
   const [loading, setLoading]     = useState(true)
 
-  // SKU 탭 필터
+  // SKU 탭 필터·페이지
   const [skuSearch, setSkuSearch] = useState('')
   const [skuTier, setSkuTier]     = useState<string>('')
+  const [skuPage, setSkuPage]     = useState(1)
+  const SKU_PAGE_SIZE = 50
 
-  const [modal, setModal] = useState<'fx' | 'demand' | 'inv' | 'exporter' | 'brewery' | 'product' | 'mapping' | 'price' | null>(null)
+  const [modal, setModal] = useState<'fx' | 'demand' | 'inv' | 'exporter' | 'brewery' | 'brewery-bulk' | 'product' | 'product-bulk' | 'mapping' | 'price' | null>(null)
+  const [editingProduct, setEditingProduct] = useState<Product | null>(null)
+  const [mappingExporterId, setMappingExporterId] = useState<number | undefined>(undefined)
+  const [bulkUpsert, setBulkUpsert] = useState(false)
+  const [breweryUpsert, setBreweryUpsert] = useState(false)
 
   // 하위 호환용 (UploadModal handlers)
   const [demandCount, setDemandCount] = useState<number | null>(null)
@@ -912,6 +1004,7 @@ export default function SetupPage() {
   }, [breweries])
 
   const filteredSkus = useMemo(() => {
+    setSkuPage(1)
     const q = skuSearch.toLowerCase()
     return products.filter(p => {
       if (skuTier && p.tier_code !== skuTier) return false
@@ -921,6 +1014,9 @@ export default function SetupPage() {
              (p.name_ko ?? '').toLowerCase().includes(q)
     })
   }, [products, skuSearch, skuTier])
+
+  const skuTotalPages = Math.max(1, Math.ceil(filteredSkus.length / SKU_PAGE_SIZE))
+  const pagedSkus = filteredSkus.slice((skuPage - 1) * SKU_PAGE_SIZE, skuPage * SKU_PAGE_SIZE)
 
   // ── 수출자 탭 통계 ───────────────────────────────────────────────────────────
   const exporterStats = useMemo(() => exporters.map(ex => {
@@ -1107,14 +1203,36 @@ export default function SetupPage() {
             <span style={{ flex: 1 }} />
             <button className="btn" onClick={() => downloadTemplate(
               'SKU마스터_템플릿.xlsx',
-              ['SKU코드', '상품명(일본어)', '상품명(한국어)', '온도대(cold/ambient/room)', '양조장명', '팔레트당박스수', '용량(ml)', '도수(%)'],
+              ['SKU코드', '상품명(일본어)', '상품명(한국어)', '온도대(cold/ambient/room)', '양조장명', '단당박스수', '팔레트당박스수', '박스당병수', '용량(ml)', '도수(%)'],
               [
-                ['N0010000', '獺祭 純米大吟醸45', '닷사이 준마이다이긴죠45', 'cold', '旭酒造', 40, 720, 15.5],
-                ['N0020000', '獺祭 純米大吟醸23', '닷사이 준마이다이긴죠23', 'cold', '旭酒造', 40, 720, 16],
-                ['S0010000', '黒牛 純米吟醸', '쿠로우시 준마이긴죠', 'ambient', '名手酒造店', 30, 1800, 15],
+                ['N0010000', '獺祭 純米大吟醸45', '닷사이 준마이다이긴죠45', 'cold', '旭酒造', 10, 40, 12, 720, 15.5],
+                ['N0020000', '獺祭 純米大吟醸23', '닷사이 준마이다이긴죠23', 'cold', '旭酒造', 10, 40, 6, 720, 16],
+                ['S0010000', '黒牛 純米吟醸', '쿠로우시 준마이긴죠', 'ambient', '名手酒造店', 6, 24, 6, 1800, 15],
               ],
             )}>
               <IconDownload size={13} /> 템플릿
+            </button>
+            <button className="btn" onClick={() => {
+              const HEADERS = ['SKU코드', '상품명(일본어)', '상품명(한국어)', '온도대', '양조장명', '제품유형(regular/spot/pb)', '단당박스수', '팔레트당박스수', '박스당병수', '용량(ml)', '도수(%)']
+              const rows = (skuTier || skuSearch ? filteredSkus : products).map(p => [
+                p.product_code,
+                p.name_ja ?? '',
+                p.name_ko ?? '',
+                p.tier_code ?? '',
+                p.brewery_id ? (breweryById.get(p.brewery_id)?.name ?? '') : '',
+                p.product_type ?? 'regular',
+                p.boxes_per_layer,
+                p.boxes_per_pallet,
+                p.bottles_per_box,
+                p.volume_ml ?? '',
+                p.alcohol_pct ?? '',
+              ])
+              downloadTemplate(`SKU마스터_${new Date().toISOString().slice(0,10)}.xlsx`, HEADERS, rows)
+            }}>
+              <IconDownload size={13} /> 일괄 다운로드
+            </button>
+            <button className="btn" onClick={() => setModal('product-bulk')}>
+              <IconUpload size={13} /> 일괄 추가/수정
             </button>
             <button className="btn btn-info" onClick={() => setModal('product')}>
               <IconPlus size={13} /> SKU 추가
@@ -1129,17 +1247,21 @@ export default function SetupPage() {
                   <th>양조장</th>
                   <th>수출자</th>
                   <th>티어</th>
+                  <th>유형</th>
                   <th className="num">용량</th>
+                  <th className="num">병/박스</th>
+                  <th className="num">단/박스</th>
                   <th className="num">CT/PL</th>
                   <th className="num">단가</th>
+                  <th></th>
                 </tr>
               </thead>
               <tbody>
                 {filteredSkus.length === 0 ? (
-                  <tr><td colSpan={8} style={{ textAlign: 'center', padding: 40, color: 'var(--text-tertiary)' }}>
+                  <tr><td colSpan={11} style={{ textAlign: 'center', padding: 40, color: 'var(--text-tertiary)' }}>
                     {skuSearch || skuTier ? '검색 결과 없음' : 'SKU가 없습니다. "+ SKU 추가"로 등록하세요.'}
                   </td></tr>
-                ) : filteredSkus.map(p => {
+                ) : pagedSkus.map(p => {
                   const myEps = epByProduct.get(p.product_id) ?? []
                   const brewery = p.brewery_id ? breweryById.get(p.brewery_id) : null
                   const sp = myEps.map(ep => priceByEp.get(ep.ep_id)).find(Boolean)
@@ -1160,10 +1282,37 @@ export default function SetupPage() {
                         </div>
                       </td>
                       <td><TierChip code={p.tier_code} /></td>
+                      <td>
+                        {p.product_type === 'spot' && <span className="chip chip-warning" style={{ fontSize: 10 }}>스팟</span>}
+                        {p.product_type === 'pb'   && <span className="chip chip-info"    style={{ fontSize: 10 }}>PB</span>}
+                        {(!p.product_type || p.product_type === 'regular') && <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>정규</span>}
+                      </td>
                       <td className="num" style={{ fontSize: 12 }}>{p.volume_ml ? `${p.volume_ml}ml` : '—'}</td>
-                      <td className="num" style={{ fontSize: 12 }}>{p.boxes_per_pallet}</td>
+                      <td className="num" style={{ fontSize: 12 }}>
+                        {p.bottles_per_box}
+                        <span style={{ color: 'var(--text-tertiary)', fontSize: 10, marginLeft: 2 }}>병</span>
+                      </td>
+                      <td className="num" style={{ fontSize: 12 }}>
+                        {p.boxes_per_layer}
+                        <span style={{ color: 'var(--text-tertiary)', fontSize: 10, marginLeft: 2 }}>박스</span>
+                      </td>
+                      <td className="num" style={{ fontSize: 12 }}>
+                        {p.boxes_per_pallet}
+                        <span style={{ color: 'var(--text-tertiary)', fontSize: 10, marginLeft: 2 }}>
+                          ({p.boxes_per_layer > 0 ? Math.round(p.boxes_per_pallet / p.boxes_per_layer) : '—'}단)
+                        </span>
+                      </td>
                       <td className="num" style={{ fontSize: 12 }}>
                         {sp ? <><span style={{ fontWeight: 600 }}>{sp.supply_price.toLocaleString()}</span> <span style={{ color: 'var(--text-tertiary)', fontSize: 10 }}>{sp.currency}</span></> : <span style={{ color: 'var(--text-tertiary)' }}>—</span>}
+                      </td>
+                      <td style={{ textAlign: 'right', paddingRight: 8 }}>
+                        <button
+                          className="btn"
+                          style={{ padding: '2px 6px', fontSize: 10 }}
+                          onClick={() => { setEditingProduct(p); setModal('product') }}
+                        >
+                          <IconPencil size={11} />
+                        </button>
                       </td>
                     </tr>
                   )
@@ -1171,6 +1320,44 @@ export default function SetupPage() {
               </tbody>
             </table>
           </div>
+
+          {/* 페이지네이션 */}
+          {skuTotalPages > 1 && (
+            <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 6, padding: '10px 0' }}>
+              <button className="btn" style={{ padding: '3px 10px', fontSize: 12 }}
+                disabled={skuPage === 1} onClick={() => setSkuPage(1)}>«</button>
+              <button className="btn" style={{ padding: '3px 10px', fontSize: 12 }}
+                disabled={skuPage === 1} onClick={() => setSkuPage(p => p - 1)}>‹</button>
+
+              {Array.from({ length: skuTotalPages }, (_, i) => i + 1)
+                .filter(p => p === 1 || p === skuTotalPages || Math.abs(p - skuPage) <= 2)
+                .reduce<(number | '…')[]>((acc, p, idx, arr) => {
+                  if (idx > 0 && p - (arr[idx - 1] as number) > 1) acc.push('…')
+                  acc.push(p)
+                  return acc
+                }, [])
+                .map((p, i) =>
+                  p === '…'
+                    ? <span key={`e${i}`} style={{ fontSize: 12, color: 'var(--text-tertiary)', padding: '0 2px' }}>…</span>
+                    : <button key={p} className="btn" onClick={() => setSkuPage(p as number)}
+                        style={{ padding: '3px 9px', fontSize: 12, fontWeight: skuPage === p ? 700 : 400,
+                          background: skuPage === p ? 'var(--bg-info)' : undefined,
+                          color: skuPage === p ? 'var(--text-info)' : undefined,
+                          border: skuPage === p ? '0.5px solid var(--text-info)' : undefined }}>
+                        {p}
+                      </button>
+                )}
+
+              <button className="btn" style={{ padding: '3px 10px', fontSize: 12 }}
+                disabled={skuPage === skuTotalPages} onClick={() => setSkuPage(p => p + 1)}>›</button>
+              <button className="btn" style={{ padding: '3px 10px', fontSize: 12 }}
+                disabled={skuPage === skuTotalPages} onClick={() => setSkuPage(skuTotalPages)}>»</button>
+
+              <span style={{ fontSize: 11, color: 'var(--text-tertiary)', marginLeft: 4 }}>
+                {(skuPage - 1) * SKU_PAGE_SIZE + 1}–{Math.min(skuPage * SKU_PAGE_SIZE, filteredSkus.length)} / {filteredSkus.length}건
+              </span>
+            </div>
+          )}
         </>
 
       ) : tab === 'exporter' ? (
@@ -1194,6 +1381,7 @@ export default function SetupPage() {
                   <th className="num">SKU</th>
                   <th className="num">양조장</th>
                   <th>티어</th>
+                  <th></th>
                 </tr>
               </thead>
               <tbody>
@@ -1211,6 +1399,15 @@ export default function SetupPage() {
                           {ex.tiers.map(t => <TierChip key={t} code={t} />)}
                         </div>
                       </td>
+                      <td style={{ textAlign: 'right', paddingRight: 8 }}>
+                        <button
+                          className="btn"
+                          style={{ padding: '2px 6px', fontSize: 10, whiteSpace: 'nowrap' }}
+                          onClick={() => { setMappingExporterId(ex.exporter_id); setModal('mapping') }}
+                        >
+                          <IconLink size={11} /> 상품연결
+                        </button>
+                      </td>
                     </tr>
                   ))}
               </tbody>
@@ -1224,9 +1421,22 @@ export default function SetupPage() {
                 <div style={{ fontSize: 13, fontWeight: 600 }}>양조장</div>
                 <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>브랜드 단위 매핑</div>
               </div>
-              <button className="btn btn-info" style={{ fontSize: 11 }} onClick={() => setModal('brewery')}>
-                <IconPlus size={12} /> 추가
-              </button>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <button className="btn" style={{ fontSize: 11 }} onClick={() => {
+                  const date = new Date().toISOString().slice(0, 10).replace(/-/g, '')
+                  const HEADERS = ['양조장명(한국어)', '양조장명(일본어)', '국가', '지역']
+                  const rows = breweries.map(b => [b.name, b.name_ja ?? '', b.country ?? 'JPN', b.region ?? ''])
+                  downloadTemplate(`양조장_${date}.xlsx`, HEADERS, rows)
+                }}>
+                  <IconDownload size={12} /> 일괄 다운로드
+                </button>
+                <button className="btn" style={{ fontSize: 11 }} onClick={() => { setBreweryUpsert(false); setModal('brewery-bulk') }}>
+                  <IconUpload size={12} /> 일괄 추가/수정
+                </button>
+                <button className="btn btn-info" style={{ fontSize: 11 }} onClick={() => setModal('brewery')}>
+                  <IconPlus size={12} /> 추가
+                </button>
+              </div>
             </div>
             <table className="pm-table">
               <thead>
@@ -1299,7 +1509,7 @@ export default function SetupPage() {
         <div className="card" style={{ maxWidth: 700 }}>
           <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>발주 캘린더</div>
           <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginBottom: 12 }}>
-            티어별 검토주기(R) 기준 · 짝수월 발주 원칙 — 검토주기(R)·리드타임(L) 수정은 <strong>온도 티어</strong> 탭에서 변경하세요
+            티어별 검토주기(R) 기준 · 매달 발주 검토 — 검토주기(R)·리드타임(L) 수정은 <strong>온도 티어</strong> 탭에서 변경하세요
           </div>
           <table className="pm-table">
             <thead>
@@ -1311,7 +1521,7 @@ export default function SetupPage() {
             </thead>
             <tbody>
               {[
-                { item: '발주 주기', val: '짝수월 (2·4·6·8·10·12)', desc: 'R,S 정책 — 홀수월은 검토하지 않음' },
+                { item: '발주 주기', val: '매달 (1~12월)', desc: 'R,S 정책 — 매달 검토 후 필요 시 발주' },
                 { item: '검토 기준일', val: '월말 (말일)', desc: '매월 말일 재고 확인 후 다음달 발주량 결정' },
                 { item: '컷오프 시간', val: '15:00 JST', desc: '해당 시간 이후 주문은 다음 발주월로 이월' },
                 { item: '최소 리드타임', val: `${tiers.length > 0 ? Math.min(...tiers.map(t => t.lead_time_months)) : 1}개월`, desc: '온도 티어 탭의 L값에서 결정됨' },
@@ -1331,8 +1541,176 @@ export default function SetupPage() {
       {/* ── Modals ──────────────────────────────────────────────────────── */}
       {modal === 'exporter' && <ExporterModal onClose={() => setModal(null)} onSaved={load} />}
       {modal === 'brewery'  && <BreweryModal  onClose={() => setModal(null)} onSaved={load} />}
-      {modal === 'product'  && <ProductModal  breweries={breweries} tiers={tiers} onClose={() => setModal(null)} onSaved={load} />}
-      {modal === 'mapping'  && <MappingModal  exporters={exporters} onClose={() => setModal(null)} onSaved={load} />}
+      {modal === 'product'  && <ProductModal  breweries={breweries} tiers={tiers} product={editingProduct ?? undefined} onClose={() => { setModal(null); setEditingProduct(null) }} onSaved={load} />}
+      {modal === 'product-bulk' && (
+        <UploadModal
+          title="상품 마스터 일괄 추가/수정"
+          templateHeader="SKU코드, 상품명(일), 상품명(한), 온도대, 양조장명, 단당박스, 팔레트박스, 박스당병수, 용량ml, 도수%"
+          templateExample={'N0010000,獺祭 純米大吟醸45,닷사이,cold,旭酒造,10,40,12,720,15.5\nS0010000,黒牛 純米吟醸,쿠로우시,ambient,名手酒造店,6,24,6,1800,15'}
+          onClose={() => { setModal(null); setBulkUpsert(false) }}
+          onSubmit={async (rows) => {
+            // 헤더명 → 필드명 매핑 (컬럼 순서 무관)
+            const detectField = (h: string): string | null => {
+              const s = h.toLowerCase().replace(/[\s()（）]/g, '')
+              if (s.includes('sku') || s.includes('상품코드') || s.includes('productcode')) return 'product_code'
+              if (s.includes('일본어') || s.includes('nameja') || s === 'name_ja') return 'name_ja'
+              if (s.includes('한국어') || s.includes('nameko') || s === 'name_ko') return 'name_ko'
+              if (s.includes('온도') || s.includes('tier')) return 'tier_code'
+              if (s.includes('양조장')) return 'brewery_name'
+              if (s.includes('제품유형') || s.includes('유형') || s.includes('type')) return 'product_type'
+              if ((s.includes('단당') || s.includes('단/박스')) && s.includes('박스')) return 'boxes_per_layer'
+              if ((s.includes('팔레트') || s.includes('ct/pl')) && !s.includes('단')) return 'boxes_per_pallet'
+              if (s.includes('병') && (s.includes('/박스') || s.includes('병수') || s.includes('bottle'))) return 'bottles_per_box'
+              if (s.includes('용량') || s.includes('volume') || s.includes('ml')) return 'volume_ml'
+              if (s.includes('도수') || s.includes('alc') || s.includes('alcohol')) return 'alcohol_pct'
+              return null
+            }
+
+            // 기본 위치 매핑 (헤더 없는 경우 fallback)
+            let idx: Record<string, number> = {
+              product_code: 0, name_ja: 1, name_ko: 2, tier_code: 3, brewery_name: 4,
+              product_type: 5, boxes_per_layer: 6, boxes_per_pallet: 7, bottles_per_box: 8, volume_ml: 9, alcohol_pct: 10,
+            }
+            let dataRows = rows
+
+            // 첫 행이 헤더인지 감지: tier_code 위치에 cold/ambient/room 이 없으면 헤더행
+            const firstTier = (rows[0]?.[idx.tier_code] ?? '').toLowerCase()
+            if (!['cold', 'ambient', 'room'].includes(firstTier)) {
+              const headerRow = rows[0] ?? []
+              const detected: Record<string, number> = {}
+              headerRow.forEach((h, i) => {
+                const f = detectField(h)
+                if (f && !(f in detected)) detected[f] = i
+              })
+              if (Object.keys(detected).length >= 3) {
+                idx = { ...idx, ...detected }
+                dataRows = rows.slice(1)
+              }
+            }
+
+            // 용량/도수 위치 자동 감지 (헤더 없는 파일 대응)
+            // 샘플 5행에서 positions 8, 9 평균값 확인: 용량(>100) vs 도수(<50)
+            const sample = dataRows.slice(0, 5)
+            const vals8 = sample.map(r => Number(r[idx.volume_ml])).filter(v => v > 0)
+            const vals9 = sample.map(r => Number(r[idx.alcohol_pct])).filter(v => v > 0)
+            const avg8 = vals8.length ? vals8.reduce((a, b) => a + b, 0) / vals8.length : 0
+            const avg9 = vals9.length ? vals9.reduce((a, b) => a + b, 0) / vals9.length : 0
+            if (avg9 > 100 && avg8 < 50) {
+              // position 9가 용량, position 8이 도수 → swap
+              const tmp = idx.volume_ml
+              idx.volume_ml = idx.alcohol_pct
+              idx.alcohol_pct = tmp
+            }
+
+            const g = (r: string[], f: string) => r[idx[f]] ?? ''
+
+            const items = dataRows.map(r => {
+              const pt = (g(r, 'product_type') || 'regular').toLowerCase()
+              return {
+                product_code:     g(r, 'product_code'),
+                name_ja:          g(r, 'name_ja'),
+                name_ko:          g(r, 'name_ko') || undefined,
+                tier_code:        g(r, 'tier_code'),
+                brewery_name:     g(r, 'brewery_name') || undefined,
+                product_type:     ['regular','spot','pb'].includes(pt) ? pt : 'regular',
+                boxes_per_layer:  Number(g(r, 'boxes_per_layer')) || 10,
+                boxes_per_pallet: Number(g(r, 'boxes_per_pallet')) || 40,
+                bottles_per_box:  Number(g(r, 'bottles_per_box')) || 12,
+                volume_ml:        g(r, 'volume_ml') ? Number(g(r, 'volume_ml')) : undefined,
+                alcohol_pct:      g(r, 'alcohol_pct') ? Number(g(r, 'alcohol_pct')) : undefined,
+              }
+            }).filter(it =>
+              it.product_code && it.name_ja &&
+              ['cold', 'ambient', 'room'].includes(it.tier_code.toLowerCase())
+            )
+            if (items.length === 0) return '유효한 행이 없습니다 (온도대는 cold/ambient/room 중 하나여야 합니다)'
+            const res = await bulkCreateProducts(items, bulkUpsert)
+            load()
+            const { created, updated, skipped, errors } = res.data
+            let msg = `완료: 신규 ${created}건`
+            if (updated) msg += ` / 수정 ${updated}건`
+            if (skipped) msg += ` / 중복 건너뜀 ${skipped}건`
+            if (errors.length) msg += `\n오류 ${errors.length}건: ${errors.slice(0,3).join('; ')}`
+            return msg
+          }}
+          options={
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer', userSelect: 'none' }}>
+              <input
+                type="checkbox"
+                checked={bulkUpsert}
+                onChange={e => setBulkUpsert(e.target.checked)}
+                style={{ width: 14, height: 14 }}
+              />
+              <span>기존 상품 덮어쓰기 (다운로드 후 수정·재업로드 시 체크)</span>
+            </label>
+          }
+        />
+      )}
+      {modal === 'brewery-bulk' && (
+        <UploadModal
+          title="양조장 일괄 추가/수정"
+          templateHeader="양조장명(한국어), 양조장명(일본어), 국가, 지역"
+          templateExample={'旭酒造,旭酒造株式会社,JPN,山口県\n名手酒造店,名手酒造店,JPN,和歌山県\n新政酒造,,JPN,秋田県'}
+          onClose={() => setModal(null)}
+          options={
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer', userSelect: 'none' }}>
+              <input type="checkbox" checked={breweryUpsert} onChange={e => setBreweryUpsert(e.target.checked)} />
+              기존 항목 덮어쓰기 (이름 동일 시 일본어명·지역 업데이트)
+            </label>
+          }
+          onSubmit={async (rows) => {
+            // 헤더 감지: 첫 행 첫 셀이 한자/가나/영문 양조장명이 아니라 헤더 키워드면 제외
+            const detectField = (h: string): string | null => {
+              const s = h.toLowerCase().replace(/[\s()（）]/g, '')
+              if (s.includes('양조장') || s.includes('name') || s.includes('蔵') || s.includes('酒造') || s === 'brewery') return 'name'
+              if (s.includes('일본어') || s.includes('ja') || s.includes('nameja')) return 'name_ja'
+              if (s.includes('국가') || s.includes('country')) return 'country'
+              if (s.includes('지역') || s.includes('region') || s.includes('현') || s.includes('県')) return 'region'
+              return null
+            }
+
+            let idx: Record<string, number> = { name: 0, name_ja: 1, country: 2, region: 3 }
+            let dataRows = rows
+
+            const firstCell = (rows[0]?.[0] ?? '').toLowerCase().replace(/[\s()（）]/g, '')
+            const isHeader = ['양조장명', '양조장', 'name', 'brewery', '名称', '蔵元'].some(k => firstCell.includes(k.toLowerCase()))
+            if (isHeader) {
+              const headerRow = rows[0] ?? []
+              const detected: Record<string, number> = {}
+              headerRow.forEach((h, i) => {
+                const f = detectField(h)
+                if (f && !(f in detected)) detected[f] = i
+              })
+              if (Object.keys(detected).length >= 1) {
+                idx = { ...idx, ...detected }
+                dataRows = rows.slice(1)
+              }
+            }
+
+            const g = (r: string[], f: string) => (r[idx[f]] ?? '').trim()
+
+            const items = dataRows
+              .map(r => ({
+                name:    g(r, 'name'),
+                name_ja: g(r, 'name_ja') || undefined,
+                country: g(r, 'country') || 'JPN',
+                region:  g(r, 'region') || undefined,
+              }))
+              .filter(it => it.name)
+
+            if (items.length === 0) return '유효한 행이 없습니다'
+            const res = await bulkCreateBreweries(items, breweryUpsert)
+            load()
+            const { created, updated, skipped, errors } = res.data
+            let msg = `완료: 신규 ${created}건`
+            if (updated) msg += ` / 수정 ${updated}건`
+            msg += ` / 건너뜀 ${skipped}건`
+            if (errors.length) msg += `\n오류 ${errors.length}건: ${errors.slice(0, 3).join('; ')}`
+            return msg
+          }}
+        />
+      )}
+      {modal === 'mapping'  && <MappingModal  exporters={exporters} defaultExporterId={mappingExporterId} onClose={() => { setModal(null); setMappingExporterId(undefined) }} onSaved={load} />}
       {modal === 'price'    && <SupplyPriceModal exporters={exporters} onClose={() => setModal(null)} onSaved={load} />}
       {modal === 'fx'       && <FxModal rates={fxRates} onClose={() => setModal(null)} onSaved={load} />}
       {modal === 'demand' && (

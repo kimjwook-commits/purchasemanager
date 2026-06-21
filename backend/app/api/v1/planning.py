@@ -11,6 +11,7 @@ from app.schemas.planning import (
     PlanAlert,
     PlanApproveRequest,
     PlanLineRead,
+    PlanLineUpdate,
     PlanRollingSummary,
     PlanRunCreate,
     PlanRunRead,
@@ -250,6 +251,31 @@ def approve_plan_run(
     db.commit()
     db.refresh(run)
     return _enrich_run(db, run)
+
+
+@router.patch("/runs/{plan_run_id}/lines/{plan_line_id}", response_model=PlanLineRead)
+def update_plan_line(
+    plan_run_id: int,
+    plan_line_id: int,
+    data: PlanLineUpdate,
+    db: DB,
+    _=Depends(require_permission("plan_approve")),
+):
+    """발주량 수동 수정 — order_boxes 직접 변경"""
+    line = db.query(PlanLine).filter(
+        PlanLine.plan_line_id == plan_line_id,
+        PlanLine.plan_run_id == plan_run_id,
+    ).first()
+    if not line:
+        raise HTTPException(status_code=404, detail="계획 라인을 찾을 수 없습니다")
+    if data.order_boxes is not None:
+        if data.order_boxes < 0:
+            raise HTTPException(status_code=422, detail="발주 박스수는 0 이상이어야 합니다")
+        line.order_boxes = data.order_boxes
+        line.order_layers = math.ceil(data.order_boxes / BOXES_PER_PALLET) if data.order_boxes > 0 else 0
+    db.commit()
+    db.refresh(line)
+    return _enrich_line(db, line)
 
 
 @router.patch("/runs/{plan_run_id}/lines/{plan_line_id}/commit", response_model=PlanLineRead)

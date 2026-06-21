@@ -20,6 +20,11 @@ export const updateExporter = (id: number, data: Partial<Exporter>) => client.pu
 
 export const getBreweries = () => client.get<Brewery[]>('/v1/breweries/')
 export const createBrewery = (data: Partial<Brewery>) => client.post<Brewery>('/v1/breweries/', data)
+export const updateBrewery = (brewery_id: number, data: { name?: string; name_ja?: string; region?: string; is_active?: boolean }) =>
+  client.patch<Brewery>(`/v1/breweries/${brewery_id}`, data)
+export const bulkCreateBreweries = (items: {
+  name: string; name_ja?: string; country?: string; region?: string
+}[], upsert = false) => client.post<{ created: number; updated: number; skipped: number; errors: string[] }>('/v1/breweries/bulk', { items, upsert })
 
 export const getProducts = (params?: { q?: string; tier?: string; exporter_id?: number; page?: number; size?: number }) =>
   client.get<{ items: Product[]; total: number; page: number; size: number }>('/v1/products/', { params })
@@ -38,11 +43,26 @@ export const updateTier = (tier_id: number, data: { review_cycle_months?: number
 export const updateContainerSpec = (spec_id: number, data: { max_pallets?: number; cost_usd?: number }) =>
   client.patch<import('./types').ContainerSpec>(`/v1/master/container-specs/${spec_id}`, data)
 
+export const bulkCreateProducts = (items: {
+  product_code: string; name_ja: string; name_ko?: string
+  tier_code: string; brewery_name?: string
+  boxes_per_layer?: number; boxes_per_pallet?: number; bottles_per_box?: number
+  volume_ml?: number; alcohol_pct?: number
+}[], upsert = false) => client.post<{ created: number; updated: number; skipped: number; errors: string[] }>('/v1/products/bulk', { items, upsert })
+
 export const createProduct = (data: {
   product_code: string; name_ja: string; name_ko?: string
-  brewery_id?: number; tier_id: number
-  boxes_per_pallet?: number; volume_ml?: number; alcohol_pct?: number
+  brewery_id?: number; tier_id: number; product_type?: string
+  boxes_per_pallet?: number; boxes_per_layer?: number; bottles_per_box?: number
+  volume_ml?: number; alcohol_pct?: number
 }) => client.post<import('./types').Product>('/v1/products/', data)
+
+export const updateProduct = (product_id: number, data: {
+  name_ja?: string; name_ko?: string
+  brewery_id?: number; tier_id?: number; product_type?: string
+  boxes_per_pallet?: number; boxes_per_layer?: number; bottles_per_box?: number
+  volume_ml?: number; alcohol_pct?: number; is_active?: boolean
+}) => client.patch<import('./types').Product>(`/v1/products/${product_id}`, data)
 
 export const getSupplyPrices = (params?: { ep_id?: number; exporter_id?: number; current_only?: boolean }) =>
   client.get<SupplyPrice[]>('/v1/supply-prices/', { params })
@@ -63,6 +83,8 @@ export const approvePlan = (plan_run_id: number, comment?: string) =>
   client.put<PlanRun>(`/v1/plan/runs/${plan_run_id}/approve`, { comment })
 export const getPlanLines = (plan_run_id: number, params?: { order_ym?: string; tier?: string; committed_only?: boolean; has_alert?: boolean }) =>
   client.get<PlanLine[]>(`/v1/plan/runs/${plan_run_id}/lines`, { params })
+export const updatePlanLine = (plan_run_id: number, plan_line_id: number, data: { order_boxes: number }) =>
+  client.patch<PlanLine>(`/v1/plan/runs/${plan_run_id}/lines/${plan_line_id}`, data)
 export const getPlanSummary = (plan_run_id: number) =>
   client.get<{ plan_run_id: number; run_ym: string; months: MonthSummary[] }>(`/v1/plan/runs/${plan_run_id}/summary`)
 export const getPlanAlerts = (plan_run_id: number) =>

@@ -92,6 +92,25 @@ class BreweryRead(BaseModel):
     is_active: bool
 
 
+class BreweryBulkItem(BaseModel):
+    name: str
+    name_ja: Optional[str] = None
+    country: str = "JPN"
+    region: Optional[str] = None
+
+
+class BreweryBulkCreate(BaseModel):
+    items: list[BreweryBulkItem]
+    upsert: bool = False
+
+
+class BreweryBulkResult(BaseModel):
+    created: int
+    updated: int = 0
+    skipped: int
+    errors: list[str]
+
+
 # ── WarehouseZone ─────────────────────────────────────────────────────────────
 
 class WarehouseZoneCreate(BaseModel):

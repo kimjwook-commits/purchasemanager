@@ -20,7 +20,10 @@ class Product(Base, TimestampMixin):
     name_ko: Mapped[Optional[str]] = mapped_column(String(200))
     brewery_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("brewery.brewery_id"))
     tier_id: Mapped[int] = mapped_column(Integer, ForeignKey("temperature_tier.tier_id"), nullable=False)
-    boxes_per_pallet: Mapped[int] = mapped_column(Integer, nullable=False, default=40)  # LAYER_BOXES(10) × PALLET_LAYERS(4)
+    product_type: Mapped[str] = mapped_column(String(20), nullable=False, default="regular")  # regular / spot / pb
+    boxes_per_pallet: Mapped[int] = mapped_column(Integer, nullable=False, default=40)
+    boxes_per_layer: Mapped[int] = mapped_column(Integer, nullable=False, default=10)  # 단당 박스수 (최소 발주 단위)
+    bottles_per_box: Mapped[int] = mapped_column(Integer, nullable=False, default=12)  # 박스당 병수
     weight_per_layer_kg: Mapped[Optional[float]] = mapped_column(Numeric(8, 2))
     alcohol_pct: Mapped[Optional[float]] = mapped_column(Numeric(4, 1))
     volume_ml: Mapped[Optional[int]] = mapped_column(Integer)

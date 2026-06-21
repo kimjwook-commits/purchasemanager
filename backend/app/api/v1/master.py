@@ -11,7 +11,7 @@ from app.schemas.master import (
     WarehouseZoneCreate, WarehouseZoneRead, WarehouseZoneUpdate,
 )
 
-router = APIRouter(tags=["master"])
+router = APIRouter(prefix="/master", tags=["master"])
 
 
 # ── TemperatureTier (조회 전용) ───────────────────────────────────────────────

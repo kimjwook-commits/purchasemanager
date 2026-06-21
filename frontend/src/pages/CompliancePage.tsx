@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react'
 import {
   IconRefresh, IconPlus, IconX, IconBuilding, IconBottle,
-  IconSnowflake, IconAlertTriangle,
+  IconSnowflake, IconAlertTriangle, IconPencil,
 } from '@tabler/icons-react'
 import {
-  getBreweries, createBrewery,
+  getBreweries, createBrewery, updateBrewery,
   getProducts, createProduct,
   getTiers, getExporters,
 } from '../api/api'
@@ -64,6 +64,62 @@ function BreweryModal({ onClose, onSaved }: { onClose: () => void; onSaved: () =
           <button className="btn" onClick={onClose}>취소</button>
           <button className="btn btn-primary" onClick={handleSave} disabled={loading}>
             {loading ? '저장 중…' : <><IconPlus size={13} /> 추가</>}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── 양조장 편집 모달 ──────────────────────────────────────────────────────────
+function BreweryEditModal({ brewery, onClose, onSaved }: { brewery: Brewery; onClose: () => void; onSaved: () => void }) {
+  const [form, setForm] = useState({ name: brewery.name, name_ja: brewery.name_ja ?? '', region: brewery.region ?? '' })
+  const [loading, setLoading] = useState(false)
+  const [err, setErr] = useState('')
+  const set = (k: string) => (e: React.ChangeEvent<HTMLInputElement>) =>
+    setForm(f => ({ ...f, [k]: e.target.value }))
+
+  const handleSave = async () => {
+    if (!form.name.trim()) { setErr('양조장명을 입력하세요'); return }
+    setLoading(true); setErr('')
+    try {
+      await updateBrewery(brewery.brewery_id, {
+        name:    form.name.trim(),
+        name_ja: form.name_ja.trim() || undefined,
+        region:  form.region.trim() || undefined,
+      })
+      onSaved(); onClose()
+    } catch (e: unknown) {
+      setErr(e instanceof Error ? e.message : '저장 실패')
+    } finally { setLoading(false) }
+  }
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-box" style={{ width: 440 }} onClick={e => e.stopPropagation()}>
+        <div className="modal-header">
+          <span className="modal-title">양조장 수정</span>
+          <button className="btn" style={{ padding: '2px 8px' }} onClick={onClose}><IconX size={13} /></button>
+        </div>
+        <div style={{ display: 'grid', gap: 10 }}>
+          <div className="form-field">
+            <label className="form-label">양조장명 *</label>
+            <input className="pm-input" value={form.name} onChange={set('name')} />
+          </div>
+          <div className="form-field">
+            <label className="form-label">양조장명 (일본어)</label>
+            <input className="pm-input" placeholder="일본어 정식 명칭" value={form.name_ja} onChange={set('name_ja')} />
+          </div>
+          <div className="form-field">
+            <label className="form-label">지역</label>
+            <input className="pm-input" placeholder="e.g. 山口県" value={form.region} onChange={set('region')} />
+          </div>
+        </div>
+        {err && <div className="alert alert-warning" style={{ marginTop: 8 }}>{err}</div>}
+        <div className="modal-footer">
+          <button className="btn" onClick={onClose}>취소</button>
+          <button className="btn btn-primary" onClick={handleSave} disabled={loading}>
+            {loading ? '저장 중…' : <><IconPencil size={13} /> 저장</>}
           </button>
         </div>
       </div>
@@ -186,6 +242,7 @@ export default function CompliancePage() {
   const [loading, setLoading]     = useState(true)
   const [search, setSearch]       = useState('')
   const [modal, setModal]         = useState<null | 'brewery' | 'product'>(null)
+  const [editingBrewery, setEditingBrewery] = useState<Brewery | null>(null)
   const [filterTier, setFilterTier] = useState('')
   const [filterBrewery, setFilterBrewery] = useState<number | ''>('')
 
@@ -306,11 +363,12 @@ export default function CompliancePage() {
                 <th>국가·지역</th>
                 <th className="num">SKU 수</th>
                 <th>상태</th>
+                <th></th>
               </tr>
             </thead>
             <tbody>
               {skuByBrewery.length === 0 ? (
-                <tr><td colSpan={5} style={{ textAlign: 'center', padding: 40, color: 'var(--text-tertiary)' }}>
+                <tr><td colSpan={6} style={{ textAlign: 'center', padding: 40, color: 'var(--text-tertiary)' }}>
                   등록된 양조장이 없습니다. "양조장 추가" 버튼으로 등록하세요.
                 </td></tr>
               ) : skuByBrewery.map(b => (
@@ -331,6 +389,12 @@ export default function CompliancePage() {
                       : <span className="chip chip-warning" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                           <IconAlertTriangle size={10} /> 상품 없음
                         </span>}
+                  </td>
+                  <td style={{ textAlign: 'right', paddingRight: 8 }}>
+                    <button className="btn" style={{ padding: '2px 6px', fontSize: 10 }}
+                      onClick={() => setEditingBrewery(b)}>
+                      <IconPencil size={11} />
+                    </button>
                   </td>
                 </tr>
               ))}
@@ -419,6 +483,13 @@ export default function CompliancePage() {
           tiers={tiers}
           onClose={() => setModal(null)}
           onSaved={load}
+        />
+      )}
+      {editingBrewery && (
+        <BreweryEditModal
+          brewery={editingBrewery}
+          onClose={() => setEditingBrewery(null)}
+          onSaved={() => { load(); setEditingBrewery(null) }}
         />
       )}
     </div>

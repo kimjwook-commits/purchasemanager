@@ -8,7 +8,7 @@ import {
 import {
   getPlanRuns, getPlanLines, getPlanSummary, runPlan, approvePlan,
   getDemandActual, getInventoryLots, getProducts,
-  bulkUpsertDemandActual, registerInitialLots,
+  bulkUpsertDemandActual, registerInitialLots, updatePlanLine,
 } from '../api/api'
 import type {
   PlanRun, PlanLine, MonthSummary,
@@ -89,6 +89,17 @@ function num(v: number | null, blank = '—') {
   return v === null ? blank : v.toLocaleString()
 }
 
+// 표준 사케 패키지 규격: volume_ml → 병/박스
+function eaPerBox(prod: { bottles_per_box?: number; volume_ml?: number | null }): number {
+  if (prod.bottles_per_box) return prod.bottles_per_box
+  const ml = prod.volume_ml
+  if (!ml) return 12
+  if (ml >= 1800) return 6
+  if (ml >= 700)  return 12
+  if (ml >= 270)  return 24
+  return 12
+}
+
 const TIER_LABEL: Record<string, string> = { cold: '냉장', ambient: '상온', room: '상냉장' }
 const N_MONTHS = 12
 const COL_PROD  = 192
@@ -113,6 +124,8 @@ export default function ForecastPage() {
   const [loading, setLoading]     = useState(true)
   const [running, setRunning]     = useState(false)
   const [showRunModal, setShowRunModal] = useState(false)
+  const [editCell, setEditCell]   = useState<{ productId: number; ym: string; planLineId: number } | null>(null)
+  const [editVal, setEditVal]     = useState('')
   const [runYm, setRunYm]         = useState(dayjs().format('YYYY-MM'))
   const scrollRef                 = useRef<HTMLDivElement>(null)
 
@@ -140,22 +153,29 @@ export default function ForecastPage() {
   }
   useEffect(() => { loadPlans() }, [])
 
-  // ── load detail data when plan selected ───────────────────────────────────
+  // ── 상품·재고·실출고는 플랜 선택과 무관하게 항상 로드 ────────────────────────
   useEffect(() => {
-    if (!selected) return
     const ymFrom = addM(centerYm, -6)
     Promise.all([
-      getPlanLines(selected.plan_run_id),
-      getPlanSummary(selected.plan_run_id),
       getDemandActual({ ym_from: ymFrom }),
       getInventoryLots({ status: 'AVAILABLE' }),
-      getProducts({ size: 200 }),
-    ]).then(([lRes, sRes, dRes, invRes, pRes]) => {
-      setLines(lRes.data ?? [])
-      setSummary(sRes.data.months ?? [])
+      getProducts({ size: 1000 }),
+    ]).then(([dRes, invRes, pRes]) => {
       setDemandData(dRes.data ?? [])
       setLots(invRes.data ?? [])
       setProducts(pRes.data?.items ?? [])
+    })
+  }, [centerYm])
+
+  // ── 플랜 선택 시 플랜라인·서머리만 로드 ──────────────────────────────────────
+  useEffect(() => {
+    if (!selected) return
+    Promise.all([
+      getPlanLines(selected.plan_run_id),
+      getPlanSummary(selected.plan_run_id),
+    ]).then(([lRes, sRes]) => {
+      setLines(lRes.data ?? [])
+      setSummary(sRes.data.months ?? [])
     })
   }, [selected])
 
@@ -199,10 +219,10 @@ export default function ForecastPage() {
 
   // plan lines by order_ym
   const orderByOym = useMemo(() => {
-    const m = new Map<number, Map<string, { boxes: number; alert: string | null }>>()
+    const m = new Map<number, Map<string, { boxes: number; alert: string | null; planLineId: number }>>()
     lines.forEach(l => {
       if (!m.has(l.product_id)) m.set(l.product_id, new Map())
-      m.get(l.product_id)!.set(l.order_ym, { boxes: l.order_boxes, alert: l.alert })
+      m.get(l.product_id)!.set(l.order_ym, { boxes: l.order_boxes, alert: l.alert, planLineId: l.plan_line_id })
     })
     return m
   }, [lines])
@@ -221,11 +241,12 @@ export default function ForecastPage() {
   // ── build rows ───────────────────────────────────────────────────────────
   const rows = useMemo(() => {
     const q = search.toLowerCase()
+    const regular = products.filter(p => !p.product_type || p.product_type === 'regular')
     const filtered = q
-      ? products.filter(p =>
+      ? regular.filter(p =>
           p.product_code?.toLowerCase().includes(q) ||
           p.name_ja?.toLowerCase().includes(q))
-      : products
+      : regular
 
     return filtered.map(prod => {
       const startInv = invMap.get(prod.product_id) ?? 0
@@ -261,23 +282,29 @@ export default function ForecastPage() {
   }, [products, search, invMap, demandMap, avgDemandMap, orderByOym, arrivalMap,
       displayMonths, todayYm, centerYm])
 
-  // ── totals ────────────────────────────────────────────────────────────────
+  // ── totals (출고·재고=병수, 발주=박스수) ────────────────────────────────────
   const totals = useMemo(() => {
     return displayMonths.map(ym => {
       let sales = 0, ord = 0, inv = 0, invCount = 0
       rows.forEach(r => {
         const m = r.months.find(x => x.ym === ym)
         if (!m) return
-        sales += m.sales ?? 0
+        const epb = eaPerBox(r.prod)
+        sales += (m.sales ?? 0) * epb
         ord   += m.ord?.boxes ?? 0
-        if (m.inv !== null) { inv += Math.max(0, m.inv); invCount++ }
+        if (m.inv !== null) { inv += Math.max(0, m.inv) * epb; invCount++ }
       })
       return { ym, sales, ord, inv: invCount > 0 ? inv : null }
     })
   }, [rows, displayMonths])
 
-  const totalStartInv = useMemo(() =>
-    [...invMap.values()].reduce((a, b) => a + b, 0), [invMap])
+  const totalStartInv = useMemo(() => {
+    let total = 0
+    products.forEach(p => {
+      total += (invMap.get(p.product_id) ?? 0) * eaPerBox(p)
+    })
+    return total
+  }, [invMap, products])
 
   // ── current plan summary stat (first order month) ─────────────────────────
   const firstOrderYm = useMemo(() => {
@@ -369,6 +396,19 @@ export default function ForecastPage() {
     loadPlans()
   }
 
+  const handleSaveEdit = async () => {
+    if (!editCell || !selected) { setEditCell(null); return }
+    const boxes = parseInt(editVal)
+    if (isNaN(boxes) || boxes < 0) { setEditCell(null); return }
+    try {
+      const res = await updatePlanLine(selected.plan_run_id, editCell.planLineId, { order_boxes: boxes })
+      setLines(prev => prev.map(l =>
+        l.plan_line_id === editCell.planLineId ? { ...l, order_boxes: res.data.order_boxes } : l
+      ))
+    } catch { /* 실패 시 원래 값 유지 */ }
+    setEditCell(null)
+  }
+
   // ── sticky column total width ─────────────────────────────────────────────
   const stickyW = COL_PROD + COL_SINV
 
@@ -379,7 +419,7 @@ export default function ForecastPage() {
         <div>
           <h1 className="page-title">월별 발주 플래너</h1>
           <p style={{ fontSize: 11, color: 'var(--text-tertiary)', margin: '2px 0 0' }}>
-            출고(박스) · 발주(박스/CTN) · 재고(박스) 실시간 계산 — <span style={{ color: 'var(--text-danger)' }}>음수 재고 = 발주 필요</span>
+            출고(병) · 발주(박스) · 재고(병) 실시간 계산 — <span style={{ color: 'var(--text-danger)' }}>음수 재고 = 발주 필요</span> · 계획 실행 버튼으로 발주량 자동 산출
           </p>
         </div>
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
@@ -458,7 +498,7 @@ export default function ForecastPage() {
           </div>
           <div className="stat-tile">
             <div className="label">현재 재고</div>
-            <div className="value">{totalStartInv.toLocaleString()} 박스</div>
+            <div className="value">{totalStartInv.toLocaleString()} 병</div>
           </div>
           <div className="stat-tile">
             <div className="label">표시 품목</div>
@@ -517,7 +557,7 @@ export default function ForecastPage() {
                       whiteSpace: 'nowrap',
                     }}
                   >
-                    시작재고<br />(박스)
+                    시작재고<br />(병)
                   </th>
                   {displayMonths.map(ym => {
                     const isPast = ym < todayYm
@@ -552,7 +592,7 @@ export default function ForecastPage() {
                     const hBg    = isCur ? 'var(--bg-info)' : isPast ? 'var(--bg-secondary)' : undefined
                     const hColor = isCur ? 'var(--text-info)' : undefined
                     return (
-                      ['출고', '발주', '재고'].map(h => (
+                      ['출고(병)', '발주(박스)', '재고(병)'].map(h => (
                         <th
                           key={ym + h}
                           style={{
@@ -580,6 +620,7 @@ export default function ForecastPage() {
                 ) : rows.map(({ prod, startInv, months }) => {
                   const hasNegInv = months.some(m => m.inv !== null && m.inv < 0)
 
+                  const epb = eaPerBox(prod)
                   return (
                     <tr key={prod.product_id}>
                       {/* Product name — sticky */}
@@ -622,7 +663,9 @@ export default function ForecastPage() {
                           fontWeight: 500,
                         }}
                       >
-                        {startInv > 0 ? startInv.toLocaleString() : <span style={{ color: 'var(--text-tertiary)' }}>—</span>}
+                        {startInv > 0
+                          ? <>{(startInv * epb).toLocaleString()}<span style={{ fontSize: 9, color: 'var(--text-tertiary)', marginLeft: 2 }}>병</span></>
+                          : <span style={{ color: 'var(--text-tertiary)' }}>—</span>}
                       </td>
 
                       {/* Month cells */}
@@ -632,7 +675,7 @@ export default function ForecastPage() {
 
                         return (
                           <>
-                            {/* 출고 */}
+                            {/* 출고 (병수) */}
                             <td
                               key={ym + '-s'}
                               className="num"
@@ -649,30 +692,65 @@ export default function ForecastPage() {
                                 fontWeight: isCur ? 600 : undefined,
                               }}
                             >
-                              {num(sales)}
+                              {num(sales !== null ? sales * epb : null)}
                               {salesEst && sales !== null && (
                                 <span style={{ fontSize: 9, opacity: 0.6, marginLeft: 2 }}>예</span>
                               )}
                             </td>
 
                             {/* 발주 */}
-                            <td
-                              key={ym + '-o'}
-                              className="num"
-                              style={{
-                                paddingRight: 8,
-                                background: monthBg,
-                                color: ord ? 'var(--text-info)' : undefined,
-                                fontWeight: ord ? 600 : undefined,
-                              }}
-                            >
-                              {ord ? ord.boxes.toLocaleString() : <span style={{ color: 'var(--text-tertiary)' }}>—</span>}
-                              {ord?.alert && (
-                                <div style={{ fontSize: 9, color: 'var(--text-warning)' }}>!</div>
-                              )}
-                            </td>
+                            {editCell?.productId === prod.product_id && editCell?.ym === ym ? (
+                              <td
+                                key={ym + '-o'}
+                                className="num"
+                                style={{ paddingRight: 4, paddingLeft: 4, background: 'var(--bg-info)' }}
+                              >
+                                <input
+                                  type="number"
+                                  min={0}
+                                  autoFocus
+                                  value={editVal}
+                                  onChange={e => setEditVal(e.target.value)}
+                                  onBlur={handleSaveEdit}
+                                  onKeyDown={e => {
+                                    if (e.key === 'Enter') handleSaveEdit()
+                                    if (e.key === 'Escape') setEditCell(null)
+                                  }}
+                                  style={{
+                                    width: '100%', textAlign: 'right',
+                                    border: '1px solid var(--color-info)',
+                                    borderRadius: 4, padding: '1px 4px',
+                                    fontSize: 12, fontFamily: 'var(--font)',
+                                    background: 'white',
+                                  }}
+                                />
+                              </td>
+                            ) : (
+                              <td
+                                key={ym + '-o'}
+                                className="num"
+                                onClick={() => {
+                                  if (ord) {
+                                    setEditCell({ productId: prod.product_id, ym, planLineId: ord.planLineId })
+                                    setEditVal(String(ord.boxes))
+                                  }
+                                }}
+                                style={{
+                                  paddingRight: 8,
+                                  background: monthBg,
+                                  color: ord ? 'var(--text-info)' : undefined,
+                                  fontWeight: ord ? 600 : undefined,
+                                  cursor: ord ? 'text' : undefined,
+                                }}
+                              >
+                                {ord ? ord.boxes.toLocaleString() : <span style={{ color: 'var(--text-tertiary)' }}>—</span>}
+                                {ord?.alert && (
+                                  <div style={{ fontSize: 9, color: 'var(--text-warning)' }}>!</div>
+                                )}
+                              </td>
+                            )}
 
-                            {/* 재고 */}
+                            {/* 재고 (병수) */}
                             <td
                               key={ym + '-i'}
                               className="num"
@@ -686,7 +764,7 @@ export default function ForecastPage() {
                             >
                               {inv === null
                                 ? <span style={{ color: 'var(--text-tertiary)' }}>—</span>
-                                : inv.toLocaleString()}
+                                : (inv * epb).toLocaleString()}
                             </td>
                           </>
                         )
@@ -724,10 +802,12 @@ export default function ForecastPage() {
                       return (
                         <>
                           <td key={ym + '-s'} className="num" style={{ paddingRight: 8, background: monthBg, color: isCur ? 'var(--text-info)' : undefined }}>
-                            {sales.toLocaleString()}
+                            {sales > 0 ? sales.toLocaleString() : <span style={{ color: 'var(--text-tertiary)' }}>—</span>}
                           </td>
                           <td key={ym + '-o'} className="num" style={{ paddingRight: 8, background: monthBg, color: ord > 0 ? 'var(--text-info)' : undefined }}>
-                            {ord > 0 ? ord.toLocaleString() : <span style={{ color: 'var(--text-tertiary)' }}>—</span>}
+                            {ord > 0
+                              ? <>{ord.toLocaleString()}<span style={{ fontSize: 9, color: 'var(--text-tertiary)', marginLeft: 2 }}>박스</span></>
+                              : <span style={{ color: 'var(--text-tertiary)' }}>—</span>}
                           </td>
                           <td key={ym + '-i'} className="num" style={{ paddingRight: 8, borderRight: '1px solid var(--border-tertiary)', background: monthBg }}>
                             {inv !== null ? inv.toLocaleString() : '—'}

@@ -81,3 +81,9 @@ class PlanAlert(BaseModel):
 
 class PlanApproveRequest(BaseModel):
     comment: Optional[str] = None
+
+
+# ── 라인 수동 수정 ────────────────────────────────────────────────────────────
+
+class PlanLineUpdate(BaseModel):
+    order_boxes: Optional[int] = None  # 수동 입력 박스수

@@ -7,7 +7,7 @@ Module 1 — R,S (Periodic Review, Order-Up-To) 발주계획 엔진
   SERVICE_Z = 2.05  (서비스레벨 ~98%)
   FORECAST_CV = 0.15
 
-발주 가능월: 짝수달만 (2,4,6,8,10,12)
+발주 가능월: 매달 (1~12월)
 도착월 = 발주월 + lead_time (1개월)
 타당성 조건: review_cycle + lead_time ≤ shelf_life_months
 """
@@ -48,11 +48,11 @@ def prev_ym_list(ym: str, n: int) -> list[str]:
     return [add_months(ym, -(n - i)) for i in range(n)]
 
 
-def ceil_to_layer(boxes: float) -> int:
-    """레이어(LAYER_BOXES=10박스) 단위로 올림"""
+def ceil_to_layer(boxes: float, layer_boxes: int = LAYER_BOXES) -> int:
+    """레이어 단위로 올림 (상품별 단당 박스수 적용)"""
     if boxes <= 0:
         return 0
-    return math.ceil(boxes / LAYER_BOXES) * LAYER_BOXES
+    return math.ceil(boxes / layer_boxes) * layer_boxes
 
 
 # ── 데이터 사전 로드 ─────────────────────────────────────────────────────────
@@ -142,8 +142,15 @@ def _plan_one_sku(
     # 목표 재고수준 S
     target_S = avg_demand * (review + lead) + safety_stock
 
+    # 상품별 단당 박스수 (없으면 전역 상수 fallback)
+    layer_boxes = product.boxes_per_layer or LAYER_BOXES
+
+    # 최소/최대 발주 단수 (PlanningParam 오버라이드)
+    min_layers = param.min_order_layers if param and param.min_order_layers else None
+    max_layers = param.max_order_layers if param and param.max_order_layers else None
+
     # 유통기한 상한: (shelf - lead) × avg_demand
-    shelf_cap = ceil_to_layer(max(0, (shelf - lead) * avg_demand))
+    shelf_cap = ceil_to_layer(max(0, (shelf - lead) * avg_demand), layer_boxes)
 
     # 타당성 경고
     feasibility_alert: Optional[str] = None
@@ -161,41 +168,42 @@ def _plan_one_sku(
 
     # ── 롤링 시뮬레이션 ─────────────────────────────────────────────────────
     position = float(initial_position)
-    # arrival_ym → 도착 예정 수량 (포지션에는 이미 포함, 소비 추적용)
     arrivals: dict[str, float] = {}
     lines: list[PlanLine] = []
 
     for i in range(horizon_months):
         order_ym = add_months(run_ym, i)
-        month = int(order_ym[5:7])
 
-        # 이번 달 도착분 반영 (이미 position에 포함되어 있으므로 별도 처리 불필요)
-        # 짝수달만 발주
-        if month % 2 == 0:
-            raw_order = target_S - position
-            order_qty = ceil_to_layer(raw_order)
-            if shelf_cap > 0:
-                order_qty = min(order_qty, shelf_cap)
+        raw_order = target_S - position
+        order_qty = ceil_to_layer(raw_order, layer_boxes)
 
-            if order_qty > 0:
-                order_layers = order_qty // LAYER_BOXES
-                arrival_ym = add_months(order_ym, lead)
-                projected = int(position + order_qty - avg_demand * (review + lead))
+        # 최소/최대 발주 단수 적용
+        if min_layers and order_qty > 0:
+            order_qty = max(order_qty, min_layers * layer_boxes)
+        if max_layers:
+            order_qty = min(order_qty, max_layers * layer_boxes)
+        if shelf_cap > 0:
+            order_qty = min(order_qty, shelf_cap)
 
-                lines.append(PlanLine(
-                    plan_run_id=plan_run_id,
-                    product_id=product.product_id,
-                    ep_id=ep_id,
-                    order_ym=order_ym,
-                    order_boxes=order_qty,
-                    order_layers=order_layers,
-                    expected_arrival_ym=arrival_ym,
-                    projected_inv_end=max(0, projected),
-                    is_committed=(i == 0),   # 당월 발주월만 committed
-                    alert=feasibility_alert,
-                ))
-                # 발주분을 포지션에 즉시 반영 (재고포지션 = 현재고 + 미착)
-                position += order_qty
+        if order_qty > 0:
+            order_layers = order_qty // layer_boxes
+            arrival_ym = add_months(order_ym, lead)
+            projected = int(position + order_qty - avg_demand * (review + lead))
+
+            lines.append(PlanLine(
+                plan_run_id=plan_run_id,
+                product_id=product.product_id,
+                ep_id=ep_id,
+                order_ym=order_ym,
+                order_boxes=order_qty,
+                order_layers=order_layers,
+                expected_arrival_ym=arrival_ym,
+                projected_inv_end=max(0, projected),
+                is_committed=(i == 0),   # 당월 발주월만 committed
+                alert=feasibility_alert,
+            ))
+            # 발주분을 포지션에 즉시 반영 (재고포지션 = 현재고 + 미착)
+            position += order_qty
 
         # 월 소비
         position = max(0, position - avg_demand)

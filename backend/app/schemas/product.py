@@ -5,13 +5,19 @@ from pydantic import BaseModel
 
 # ── Product ───────────────────────────────────────────────────────────────────
 
+PRODUCT_TYPES = {"regular", "spot", "pb"}
+
+
 class ProductCreate(BaseModel):
     product_code: str
     name_ja: str
     name_ko: Optional[str] = None
     brewery_id: Optional[int] = None
     tier_id: int
+    product_type: str = "regular"
     boxes_per_pallet: int = 40
+    boxes_per_layer: int = 10
+    bottles_per_box: int = 12
     weight_per_layer_kg: Optional[float] = None
     alcohol_pct: Optional[float] = None
     volume_ml: Optional[int] = None
@@ -22,7 +28,10 @@ class ProductUpdate(BaseModel):
     name_ko: Optional[str] = None
     brewery_id: Optional[int] = None
     tier_id: Optional[int] = None
+    product_type: Optional[str] = None
     boxes_per_pallet: Optional[int] = None
+    boxes_per_layer: Optional[int] = None
+    bottles_per_box: Optional[int] = None
     weight_per_layer_kg: Optional[float] = None
     alcohol_pct: Optional[float] = None
     volume_ml: Optional[int] = None
@@ -38,7 +47,10 @@ class ProductRead(BaseModel):
     brewery_id: Optional[int]
     tier_id: int
     tier_code: Optional[str] = None   # 조회 시 tier.code 포함
+    product_type: str = "regular"
     boxes_per_pallet: int
+    boxes_per_layer: int
+    bottles_per_box: int
     alcohol_pct: Optional[float]
     volume_ml: Optional[int]
     is_active: bool
@@ -94,6 +106,34 @@ class SupplyPriceRead(BaseModel):
     brewery_price: Optional[float] = None  # permission 없으면 None
     supply_price: float
     note: Optional[str]
+
+
+# ── ProductBulk ───────────────────────────────────────────────────────────────
+
+class ProductBulkItem(BaseModel):
+    product_code: str
+    name_ja: str
+    name_ko: Optional[str] = None
+    tier_code: str                   # cold / ambient / room
+    brewery_name: Optional[str] = None
+    product_type: str = "regular"    # regular / spot / pb
+    boxes_per_layer: int = 10
+    boxes_per_pallet: int = 40
+    bottles_per_box: int = 12
+    volume_ml: Optional[int] = None
+    alcohol_pct: Optional[float] = None
+
+
+class ProductBulkCreate(BaseModel):
+    items: list[ProductBulkItem]
+    upsert: bool = False          # True 이면 기존 상품도 업데이트
+
+
+class ProductBulkResult(BaseModel):
+    created: int
+    updated: int = 0
+    skipped: int
+    errors: list[str]
 
 
 # ── PlanningParam ─────────────────────────────────────────────────────────────

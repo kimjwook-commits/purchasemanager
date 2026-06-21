@@ -34,6 +34,8 @@ export interface TemperatureTier {
   lead_time_months: number
 }
 
+export type ProductType = 'regular' | 'spot' | 'pb'
+
 export interface Product {
   product_id: number
   product_code: string
@@ -44,7 +46,10 @@ export interface Product {
   tier_name: string | null
   brewery_id: number | null
   brewery_name: string | null
+  product_type: ProductType
   boxes_per_pallet: number
+  boxes_per_layer: number
+  bottles_per_box: number
   alcohol_pct: number | null
   volume_ml: number | null
   is_active: boolean
