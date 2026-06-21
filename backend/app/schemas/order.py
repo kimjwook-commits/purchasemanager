@@ -15,6 +15,8 @@ class PoLineRead(BaseModel):
     product_code: Optional[str] = None
     name_ja: Optional[str] = None
     tier_code: Optional[str] = None
+    brewery_id: Optional[int] = None
+    brewery_name: Optional[str] = None
     order_boxes: int
     order_layers: int
     unit_price: Optional[float]

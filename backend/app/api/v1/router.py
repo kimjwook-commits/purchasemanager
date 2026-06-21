@@ -5,6 +5,8 @@ from app.api.v1 import (
     container_plan,
     exporter_products,
     exporters,
+    fx_rates,
+    inventory,
     kanban,
     master,
     planning,
@@ -24,6 +26,8 @@ router.include_router(master.router)
 router.include_router(products.router)
 router.include_router(exporter_products.router)
 router.include_router(supply_prices.router)
+router.include_router(fx_rates.router)
+router.include_router(inventory.router)
 router.include_router(planning_params.router)
 router.include_router(planning.router)
 router.include_router(kanban.router)

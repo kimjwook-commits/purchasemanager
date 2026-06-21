@@ -78,7 +78,7 @@ def _container_mix(
     spec_40: ContainerSpec,
     spec_20: ContainerSpec,
 ) -> List[Tuple[ContainerSpec, int]]:
-    """최소 비용 컨테이너 조합 반환: [(spec, capacity), ...]"""
+    """컨테이너 수 최소화 조합 반환 (40ft 우선): [(spec, capacity), ...]"""
     if total_pallets <= 0:
         return []
 
@@ -88,16 +88,9 @@ def _container_mix(
     if rem == 0:
         return result
 
-    if rem <= spec_20.max_pallets:
-        # 20ft 1개 vs 40ft 1개 — 더 저렴한 쪽 선택
-        if float(spec_20.cost_usd) <= float(spec_40.cost_usd):
-            result.append((spec_20, spec_20.max_pallets))
-        else:
-            result.append((spec_40, spec_40.max_pallets))
-    else:
-        # rem > 10 → 40ft 1개 추가 (20ft 2개보다 저렴)
-        result.append((spec_40, spec_40.max_pallets))
-
+    # 잔여 팔레트: 컨테이너 수 최소화를 위해 항상 40ft 1개 추가
+    # (20ft가 저렴하더라도 40ft 우선 — 빈 슬롯에 상온 제품 백필 가능)
+    result.append((spec_40, spec_40.max_pallets))
     return result
 
 
@@ -210,25 +203,91 @@ def generate_packing_plan(db: Session, po_id: int) -> PackingPlan:
             line.order_boxes,
         ))
 
-    # 그룹별 FFD 배정
+    # ── 그룹별 FFD 배정 (냉장 우선 → 상온 백필) ───────────────────────────────
     all_slots: List[ContainerSlot] = []
+    cold_slots: List[ContainerSlot] = []
+    room_items_all: List[Tuple] = groups.get(room_tier_id, []) if room_tier_id else []
+    room_items_remaining: List[Tuple] = list(room_items_all)
 
-    for ctid, items in sorted(groups.items()):
+    # 1단계: 냉장 컨테이너 배정
+    if cold_tier_id and cold_tier_id in groups:
+        cold_items = groups[cold_tier_id]
+        cold_specs = specs_by_tier.get(cold_tier_id, {})
+        spec_40 = cold_specs.get("40ft")
+        spec_20 = cold_specs.get("20ft")
+        if not spec_40 or not spec_20:
+            raise ValueError("냉장 컨테이너 스펙이 없습니다. container_spec 테이블을 확인하세요.")
+
+        total_cold = sum(item[1] for item in cold_items)
+        mix = _container_mix(total_cold, spec_40, spec_20)
+        cold_slots = [
+            ContainerSlot(
+                spec_id=spec.spec_id,
+                container_type=spec.container_type,
+                tier_code="cold",
+                cost_usd=float(spec.cost_usd),
+                max_pallets=cap,
+            )
+            for spec, cap in mix
+        ]
+        _ffd_assign(cold_slots, cold_items)
+
+        # 2단계: 냉장 컨테이너 잔여 슬롯에 상온 제품 백필
+        remaining_cold_capacity = sum(s.remaining for s in cold_slots)
+        if remaining_cold_capacity > 0 and room_items_remaining:
+            # 백필 전 po_line_id 집합 기록 (냉장 배정된 것)
+            before_ids = {a.po_line_id for s in cold_slots for a in s.assignments}
+            # 상온 아이템을 냉장 슬롯에 FFD 시도
+            _ffd_assign(cold_slots, room_items_remaining)
+            # 새로 배정된 po_line_id 확인
+            after_ids = {a.po_line_id for s in cold_slots for a in s.assignments}
+            placed_ids = after_ids - before_ids
+            # 냉장에 배정된 상온 아이템은 room_items_remaining에서 제거
+            room_items_remaining = [
+                item for item in room_items_remaining if item[0] not in placed_ids
+            ]
+
+        all_slots.extend(cold_slots)
+
+    # 3단계: 냉장에 들어가지 못한 상온 제품 → 상온 컨테이너
+    if room_items_remaining and room_tier_id:
+        room_specs = specs_by_tier.get(room_tier_id, {})
+        spec_40 = room_specs.get("40ft")
+        spec_20 = room_specs.get("20ft")
+        if not spec_40 or not spec_20:
+            raise ValueError("상온 컨테이너 스펙이 없습니다. container_spec 테이블을 확인하세요.")
+
+        total_room = sum(item[1] for item in room_items_remaining)
+        mix = _container_mix(total_room, spec_40, spec_20)
+        room_slots = [
+            ContainerSlot(
+                spec_id=spec.spec_id,
+                container_type=spec.container_type,
+                tier_code="room",
+                cost_usd=float(spec.cost_usd),
+                max_pallets=cap,
+            )
+            for spec, cap in mix
+        ]
+        _ffd_assign(room_slots, room_items_remaining)
+        all_slots.extend(room_slots)
+
+    # 냉장도 상온도 아닌 기타 그룹 처리 (ambient 등)
+    for ctid, items in groups.items():
+        if ctid in (cold_tier_id, room_tier_id):
+            continue
         tier_specs = specs_by_tier.get(ctid, {})
         spec_40 = tier_specs.get("40ft")
         spec_20 = tier_specs.get("20ft")
-
         if not spec_40 or not spec_20:
             ctier = all_tiers.get(ctid)
             raise ValueError(
                 f"컨테이너 스펙이 없습니다 (tier={ctier.code if ctier else ctid}). "
                 "container_spec 테이블을 확인하세요."
             )
-
         ctier = all_tiers[ctid]
-        total_pallets = sum(item[1] for item in items)
-        mix = _container_mix(total_pallets, spec_40, spec_20)
-
+        total_p = sum(item[1] for item in items)
+        mix = _container_mix(total_p, spec_40, spec_20)
         slots = [
             ContainerSlot(
                 spec_id=spec.spec_id,

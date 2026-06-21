@@ -7,7 +7,7 @@ from app.api.deps import DB, CurrentUser, require_permission
 from app.models.master import ContainerSpec, TemperatureTier, WarehouseZone
 from app.schemas.master import (
     ContainerSpecCreate, ContainerSpecRead, ContainerSpecUpdate,
-    TemperatureTierRead,
+    TemperatureTierRead, TemperatureTierUpdate,
     WarehouseZoneCreate, WarehouseZoneRead, WarehouseZoneUpdate,
 )
 
@@ -26,6 +26,23 @@ def get_tier(tier_id: int, db: DB, _: CurrentUser):
     obj = db.query(TemperatureTier).filter(TemperatureTier.tier_id == tier_id).first()
     if not obj:
         raise HTTPException(status_code=404, detail="온도 티어를 찾을 수 없습니다")
+    return obj
+
+
+@router.patch("/temperature-tiers/{tier_id}", response_model=TemperatureTierRead)
+def update_tier(
+    tier_id: int,
+    data: TemperatureTierUpdate,
+    db: DB,
+    _=Depends(require_permission("item_register")),
+):
+    obj = db.query(TemperatureTier).filter(TemperatureTier.tier_id == tier_id).first()
+    if not obj:
+        raise HTTPException(status_code=404, detail="온도 티어를 찾을 수 없습니다")
+    for k, v in data.model_dump(exclude_none=True).items():
+        setattr(obj, k, v)
+    db.commit()
+    db.refresh(obj)
     return obj
 
 

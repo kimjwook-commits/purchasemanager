@@ -38,11 +38,15 @@ export interface Product {
   product_id: number
   product_code: string
   name_ja: string | null
+  name_ko: string | null
   tier_id: number
   tier_code: string | null
   tier_name: string | null
   brewery_id: number | null
   brewery_name: string | null
+  boxes_per_pallet: number
+  alcohol_pct: number | null
+  volume_ml: number | null
   is_active: boolean
 }
 
@@ -57,12 +61,22 @@ export interface ExporterProduct {
 }
 
 export interface SupplyPrice {
-  sp_id: number
+  price_id: number
   ep_id: number
   supply_price: number
   brewery_price: number | null
   currency: string
   effective_date: string
+  note: string | null
+}
+
+export interface ContainerSpec {
+  spec_id: number
+  container_type: string
+  tier_id: number
+  max_pallets: number
+  cost_usd: number
+  is_active: boolean
 }
 
 // ── Planning ──────────────────────────────────────────────────────────────────
@@ -138,6 +152,8 @@ export interface PoLine {
   product_code: string | null
   name_ja: string | null
   tier_code: string | null
+  brewery_id: number | null
+  brewery_name: string | null
   order_boxes: number
   order_layers: number
   unit_price: number | null
@@ -270,4 +286,47 @@ export interface PackingPlanResult {
   container_count: number
   total_cost_usd: number
   containers: ContainerSlot[]
+}
+
+// ── FX Rate ───────────────────────────────────────────────────────────────────
+export interface FxRate {
+  rate_id: number
+  base_currency: string
+  quote_currency: string
+  rate_date: string
+  rate: number
+  source: string
+}
+
+// ── Inventory / Demand ────────────────────────────────────────────────────────
+export interface DemandActualRead {
+  da_id: number
+  product_id: number
+  product_code: string | null
+  ym: string
+  qty_boxes: number
+}
+
+export interface DemandActualSummary {
+  upserted: number
+  skipped: number
+}
+
+export interface InvLotRead {
+  lot_id: number
+  product_id: number
+  product_code: string | null
+  zone_id: number
+  zone_code: string | null
+  lot_no: string
+  qty_boxes: number
+  mfg_date: string | null
+  exp_date: string | null
+  status: string
+}
+
+export interface InvLotSummary {
+  total_lots: number
+  total_boxes: number
+  product_count: number
 }

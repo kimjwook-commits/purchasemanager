@@ -1,421 +1,289 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState } from 'react'
 import {
-  Table, Tag, Button, Drawer, Steps, Space, Typography, message,
-  Modal, Form, Input, DatePicker, Select, Divider, Descriptions, Badge,
-  Popconfirm, Card, InputNumber,
-} from 'antd'
-import {
-  CarryOutOutlined, CheckCircleOutlined, CloseCircleOutlined,
-  FileSearchOutlined, RightCircleOutlined, ContainerOutlined,
-} from '@ant-design/icons'
-import {
-  getShipments, getShipment, advanceShipment, cancelShipment,
-  addInspection, receiveShipment, updateContainer, getPoLines,
-} from '../api/api'
-import type { ShipmentListItem, ShipmentDetail, PoLine } from '../api/types'
+  IconPackage, IconAnchor, IconTruck, IconShieldCheck,
+  IconFileCheck, IconBuildingWarehouse, IconCircleCheck,
+  IconCircle, IconLoader, IconPlus, IconAlertTriangle,
+} from '@tabler/icons-react'
+import { getShipments, getShipment } from '../api/api'
+import type { ShipmentListItem, ShipmentDetail } from '../api/types'
 import dayjs from 'dayjs'
 
-const { Title, Text } = Typography
+const STEPS = [
+  { key: 'departure',         label: '선적',   Icon: IconPackage },
+  { key: 'arrival',           label: '도착',   Icon: IconAnchor },
+  { key: 'inland',            label: '이송',   Icon: IconTruck },
+  { key: 'inspection',        label: '검사',   Icon: IconShieldCheck },
+  { key: 'customs_clearance', label: '통관',   Icon: IconFileCheck },
+  { key: 'received',          label: '입고',   Icon: IconBuildingWarehouse },
+]
 
-// 상태 순서
-const STATUS_ORDER = ['DEPARTED', 'ARRIVED', 'IN_TRANSIT', 'INSPECTING', 'CUSTOMS', 'RECEIVED']
-const STATUS_LABELS: Record<string, string> = {
-  DEPARTED: '출항',
-  ARRIVED: '입항',
-  IN_TRANSIT: '내륙운송',
-  INSPECTING: '검수',
-  CUSTOMS: '통관',
-  RECEIVED: '입고완료',
-  CANCELLED: '취소',
-}
-const STATUS_COLORS: Record<string, string> = {
-  DEPARTED: 'blue',
-  ARRIVED: 'cyan',
-  IN_TRANSIT: 'orange',
-  INSPECTING: 'purple',
-  CUSTOMS: 'geekblue',
-  RECEIVED: 'green',
-  CANCELLED: 'red',
+const STATUS_CHIP: Record<string, string> = {
+  CREATED:    'chip-default',
+  IN_TRANSIT: 'chip-info',
+  ARRIVED:    'chip-warning',
+  INSPECTING: 'chip-warning',
+  CLEARED:    'chip-success',
+  RECEIVED:   'chip-success',
+  CANCELLED:  'chip-danger',
 }
 
-function statusStep(status: string) {
-  const idx = STATUS_ORDER.indexOf(status)
-  return idx >= 0 ? idx : -1
-}
+const DOCS_CHECKLIST = [
+  { group: '도착 · 공통 서류', items: [
+    { key: 'invoice',    label: '인보이스 수령·등록' },
+    { key: 'packing',   label: '패킹리스트 수령·등록' },
+    { key: 'bl',        label: 'B/L 수령·등록' },
+  ]},
+  { group: '보세이송 준비', items: [
+    { key: 'do',        label: 'D/O 등록·결부' },
+    { key: 'bl2',       label: 'B/L 수령 등록' },
+  ]},
+  { group: '검사 전 준비', items: [
+    { key: 'sample',    label: '항목별 검사 수량 확정' },
+    { key: 'cert',      label: '위생증명서 수령' },
+  ]},
+  { group: '통관 전 준비', items: [
+    { key: 'inspect_cert', label: '검체증 등록' },
+    { key: 'import_cert',  label: '수입고시 등록' },
+    { key: 'rcep',         label: 'RCEP 원산지 적용' },
+    { key: 'po_export',    label: '수출자별 P/O' },
+  ]},
+]
 
-export default function ShipmentsPage() {
-  const [data, setData] = useState<ShipmentListItem[]>([])
-  const [loading, setLoading] = useState(true)
-  const [selectedId, setSelectedId] = useState<number | null>(null)
-  const [detail, setDetail] = useState<ShipmentDetail | null>(null)
-  const [drawerOpen, setDrawerOpen] = useState(false)
-  const [detailLoading, setDetailLoading] = useState(false)
-  const [advanceOpen, setAdvanceOpen] = useState(false)
-  const [inspectionOpen, setInspectionOpen] = useState(false)
-  const [receiveOpen, setReceiveOpen] = useState(false)
-  const [poLines, setPoLines] = useState<PoLine[]>([])
-  const [advanceForm] = Form.useForm()
-  const [inspForm] = Form.useForm()
-  const [receiveForm] = Form.useForm()
-
-  const load = useCallback(() => {
-    setLoading(true)
-    getShipments().then(r => setData(r.data)).finally(() => setLoading(false))
-  }, [])
-
-  useEffect(() => { load() }, [load])
-
-  const loadDetail = useCallback((id: number) => {
-    setDetailLoading(true)
-    getShipment(id).then(r => setDetail(r.data)).finally(() => setDetailLoading(false))
-  }, [])
-
-  const openDrawer = (id: number) => {
-    setSelectedId(id)
-    setDrawerOpen(true)
-    loadDetail(id)
-  }
-
-  const handleAdvance = async () => {
-    if (!selectedId) return
-    const values = await advanceForm.validateFields()
-    const payload: Record<string, unknown> = {}
-    for (const [k, v] of Object.entries(values)) {
-      if (v == null) continue
-      if (v instanceof dayjs && (v as dayjs.Dayjs).isValid()) {
-        payload[k] = (v as dayjs.Dayjs).format('YYYY-MM-DD')
-      } else {
-        payload[k] = v
-      }
-    }
-    try {
-      await advanceShipment(selectedId, payload)
-      message.success('단계가 전진되었습니다')
-      setAdvanceOpen(false)
-      advanceForm.resetFields()
-      loadDetail(selectedId)
-      load()
-    } catch (e: any) {
-      message.error(e.response?.data?.detail || '오류 발생')
-    }
-  }
-
-  const handleCancel = async () => {
-    if (!selectedId) return
-    try {
-      await cancelShipment(selectedId)
-      message.success('선적이 취소되었습니다')
-      setDrawerOpen(false)
-      load()
-    } catch (e: any) {
-      message.error(e.response?.data?.detail || '취소 실패')
-    }
-  }
-
-  const handleInspection = async () => {
-    if (!selectedId) return
-    const values = await inspForm.validateFields()
-    try {
-      await addInspection(selectedId, values)
-      message.success('검수 결과가 등록되었습니다')
-      setInspectionOpen(false)
-      inspForm.resetFields()
-      loadDetail(selectedId)
-    } catch (e: any) {
-      message.error(e.response?.data?.detail || '오류 발생')
-    }
-  }
-
-  const openReceive = async () => {
-    if (!detail) return
-    const linesRes = await getPoLines(detail.po_id)
-    setPoLines(linesRes.data)
-    const initialValues: Record<string, unknown> = {}
-    linesRes.data.forEach(pl => {
-      initialValues[`qty_${pl.po_line_id}`] = pl.order_boxes
-    })
-    receiveForm.setFieldsValue(initialValues)
-    setReceiveOpen(true)
-  }
-
-  const handleReceive = async () => {
-    if (!selectedId || !detail) return
-    const values = receiveForm.getFieldsValue()
-    const lots = poLines.map(pl => ({
-      po_line_id: pl.po_line_id,
-      qty_boxes: values[`qty_${pl.po_line_id}`] ?? pl.order_boxes,
-      exp_date: values[`exp_${pl.po_line_id}`]
-        ? (values[`exp_${pl.po_line_id}`] as dayjs.Dayjs).format('YYYY-MM-DD')
-        : undefined,
-    }))
-    try {
-      const res = await receiveShipment(selectedId, lots)
-      message.success(`${res.data.length}개 로트가 입고 완료되었습니다`)
-      setReceiveOpen(false)
-      loadDetail(selectedId)
-      load()
-    } catch (e: any) {
-      message.error(e.response?.data?.detail || '입고 실패')
-    }
-  }
-
-  const columns = [
-    {
-      title: '상태', dataIndex: 'status', key: 'status', width: 90,
-      render: (v: string) => <Tag color={STATUS_COLORS[v] || 'default'}>{STATUS_LABELS[v] || v}</Tag>,
-    },
-    {
-      title: '발주서', dataIndex: 'po_no', key: 'po_no', width: 160,
-      render: (v: string | null) => <Text strong>{v || '-'}</Text>,
-    },
-    { title: '발주월', dataIndex: 'order_ym', key: 'order_ym', width: 90 },
-    { title: '수출자', dataIndex: 'exporter_code', key: 'exporter_code', width: 100 },
-    { title: 'B/L', dataIndex: 'bl_no', key: 'bl_no' },
-    { title: '선박', dataIndex: 'vessel_name', key: 'vessel_name' },
-    {
-      title: '출항일', dataIndex: 'departure_date', key: 'departure_date', width: 100,
-      render: (v: string | null) => v || '-',
-    },
-    {
-      title: '입항 예정', dataIndex: 'arrival_date', key: 'arrival_date', width: 100,
-      render: (v: string | null) => v || '-',
-    },
-    {
-      title: '컨테이너', dataIndex: 'container_count', key: 'container_count', width: 80,
-      align: 'center' as const,
-    },
-    {
-      title: '', key: 'action', width: 80,
-      render: (_: unknown, row: ShipmentListItem) => (
-        <Button size="small" icon={<FileSearchOutlined />} onClick={() => openDrawer(row.shipment_id)}>
-          상세
-        </Button>
-      ),
-    },
-  ]
-
-  const currentStep = detail ? statusStep(detail.status) : -1
-  const stepItems = STATUS_ORDER.map((s, i) => ({
-    title: STATUS_LABELS[s],
-    status: (
-      detail?.status === 'CANCELLED' ? 'error' :
-      i < currentStep ? 'finish' :
-      i === currentStep ? 'process' : 'wait'
-    ) as 'finish' | 'process' | 'wait' | 'error',
-  }))
-
+function StepItem({ step, dateVal, isCurrent }: {
+  step: typeof STEPS[0]; dateVal?: string | null; isCurrent: boolean
+}) {
+  const done = !!dateVal
+  const Icon = step.Icon
   return (
-    <Space direction="vertical" size={16} style={{ width: '100%' }}>
-      <Title level={4} style={{ margin: 0 }}>선적 관리</Title>
-
-      <Table
-        dataSource={data}
-        columns={columns}
-        rowKey="shipment_id"
-        loading={loading}
-        size="small"
-        pagination={{ pageSize: 20, showTotal: t => `총 ${t}건` }}
-      />
-
-      {/* 상세 Drawer */}
-      <Drawer
-        title={detail ? `선적 #${detail.shipment_id} — ${detail.po_no || ''}` : '선적 상세'}
-        open={drawerOpen}
-        onClose={() => setDrawerOpen(false)}
-        width={720}
-        loading={detailLoading}
-        extra={
-          detail && detail.status !== 'RECEIVED' && detail.status !== 'CANCELLED' && (
-            <Space>
-              {detail.status === 'CUSTOMS' ? (
-                <Button type="primary" icon={<CarryOutOutlined />} onClick={openReceive}>
-                  입고 확정
-                </Button>
-              ) : (
-                <Button type="primary" icon={<RightCircleOutlined />} onClick={() => { advanceForm.resetFields(); setAdvanceOpen(true) }}>
-                  단계 전진
-                </Button>
-              )}
-              <Popconfirm title="선적을 취소하시겠습니까?" onConfirm={handleCancel} okText="취소 확정" cancelText="닫기">
-                <Button danger icon={<CloseCircleOutlined />}>취소</Button>
-              </Popconfirm>
-            </Space>
-          )
-        }
-      >
-        {detail && (
-          <Space direction="vertical" size={16} style={{ width: '100%' }}>
-            {/* 스테퍼 */}
-            <Steps
-              current={detail.status === 'CANCELLED' ? currentStep : currentStep}
-              items={stepItems}
-              size="small"
-            />
-
-            {/* 기본 정보 */}
-            <Descriptions bordered size="small" column={2}>
-              <Descriptions.Item label="상태">
-                <Tag color={STATUS_COLORS[detail.status]}>{STATUS_LABELS[detail.status]}</Tag>
-              </Descriptions.Item>
-              <Descriptions.Item label="발주서">{detail.po_no || '-'}</Descriptions.Item>
-              <Descriptions.Item label="B/L 번호">{detail.bl_no || '-'}</Descriptions.Item>
-              <Descriptions.Item label="D/O 번호">{detail.do_no || '-'}</Descriptions.Item>
-              <Descriptions.Item label="선박명">{detail.vessel_name || '-'}</Descriptions.Item>
-              <Descriptions.Item label="출항항">{detail.departure_port || '-'}</Descriptions.Item>
-              <Descriptions.Item label="도착항">{detail.arrival_port || '-'}</Descriptions.Item>
-              <Descriptions.Item label="출항일">{detail.departure_date || '-'}</Descriptions.Item>
-              <Descriptions.Item label="입항일">{detail.arrival_date || '-'}</Descriptions.Item>
-              <Descriptions.Item label="내륙운송일">{detail.inland_date || '-'}</Descriptions.Item>
-              <Descriptions.Item label="검수일">{detail.inspection_date || '-'}</Descriptions.Item>
-              <Descriptions.Item label="통관일">{detail.customs_clearance_date || '-'}</Descriptions.Item>
-              <Descriptions.Item label="입고일">{detail.received_date || '-'}</Descriptions.Item>
-              <Descriptions.Item label="RCEP 원산지증명">{detail.rcep_cert_no || '-'}</Descriptions.Item>
-              <Descriptions.Item label="수입신고번호">{detail.customs_declaration_no || '-'}</Descriptions.Item>
-            </Descriptions>
-
-            {/* 컨테이너 목록 */}
-            <Divider orientation="left">컨테이너 ({detail.container_count}개)</Divider>
-            <Table
-              dataSource={detail.containers}
-              rowKey="container_id"
-              size="small"
-              pagination={false}
-              columns={[
-                { title: '컨테이너번호', dataIndex: 'container_no', render: (v: string | null) => v || <Text type="secondary">미입력</Text> },
-                { title: '씰번호', dataIndex: 'seal_no', render: (v: string | null) => v || '-' },
-                { title: '팔레트', dataIndex: 'pallets_used', width: 80 },
-                { title: '적재', dataIndex: 'load_count', width: 60 },
-                {
-                  title: '비용 (USD)', dataIndex: 'cost_usd', width: 100, align: 'right' as const,
-                  render: (v: number | null) => v != null ? `$${v.toLocaleString()}` : '-',
-                },
-              ]}
-            />
-
-            {/* 검수 */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <Divider orientation="left" style={{ flex: 1 }}>검수 결과</Divider>
-              {['ARRIVED', 'IN_TRANSIT', 'INSPECTING'].includes(detail.status) && (
-                <Button size="small" onClick={() => { inspForm.resetFields(); setInspectionOpen(true) }}>
-                  + 검수 등록
-                </Button>
-              )}
-            </div>
-            {detail.inspections.length === 0 ? (
-              <Text type="secondary">검수 결과 없음</Text>
-            ) : (
-              <Table
-                dataSource={detail.inspections}
-                rowKey="inspection_id"
-                size="small"
-                pagination={false}
-                columns={[
-                  { title: '상품', dataIndex: 'product_code' },
-                  { title: '일본어명', dataIndex: 'name_ja' },
-                  { title: '샘플 박스', dataIndex: 'sample_boxes', width: 90 },
-                  {
-                    title: '결과', dataIndex: 'result', width: 90,
-                    render: (v: string) => (
-                      <Tag color={v === 'PASS' ? 'green' : v === 'FAIL' ? 'red' : 'orange'}>{v}</Tag>
-                    ),
-                  },
-                  { title: '비고', dataIndex: 'note', render: (v: string | null) => v || '-' },
-                ]}
-              />
-            )}
-          </Space>
-        )}
-      </Drawer>
-
-      {/* 단계 전진 모달 */}
-      <Modal
-        title={`단계 전진: ${detail ? STATUS_LABELS[detail.status] : ''} → ${detail && NEXT_STATUS_LABELS[detail.status] ? NEXT_STATUS_LABELS[detail.status] : ''}`}
-        open={advanceOpen}
-        onOk={handleAdvance}
-        onCancel={() => setAdvanceOpen(false)}
-        okText="전진"
-        cancelText="취소"
-      >
-        <Form form={advanceForm} layout="vertical" style={{ marginTop: 12 }}>
-          <Form.Item name="bl_no" label="B/L 번호"><Input /></Form.Item>
-          <Form.Item name="vessel_name" label="선박명"><Input /></Form.Item>
-          <Form.Item name="departure_port" label="출항항"><Input /></Form.Item>
-          <Form.Item name="arrival_port" label="도착항"><Input /></Form.Item>
-          <Form.Item name="departure_date" label="출항일"><DatePicker style={{ width: '100%' }} /></Form.Item>
-          <Form.Item name="arrival_date" label="입항일"><DatePicker style={{ width: '100%' }} /></Form.Item>
-          <Form.Item name="inland_date" label="내륙운송 도착일"><DatePicker style={{ width: '100%' }} /></Form.Item>
-          <Form.Item name="inspection_date" label="검수일"><DatePicker style={{ width: '100%' }} /></Form.Item>
-          <Form.Item name="customs_clearance_date" label="통관일"><DatePicker style={{ width: '100%' }} /></Form.Item>
-          <Form.Item name="rcep_cert_no" label="RCEP 원산지증명서 번호"><Input /></Form.Item>
-          <Form.Item name="customs_declaration_no" label="수입신고번호"><Input /></Form.Item>
-          <Form.Item name="note" label="비고"><Input.TextArea rows={2} /></Form.Item>
-        </Form>
-      </Modal>
-
-      {/* 검수 등록 모달 */}
-      <Modal
-        title="검수 결과 등록"
-        open={inspectionOpen}
-        onOk={handleInspection}
-        onCancel={() => setInspectionOpen(false)}
-        okText="등록"
-        cancelText="취소"
-      >
-        <Form form={inspForm} layout="vertical" style={{ marginTop: 12 }}>
-          <Form.Item name="product_id" label="상품 ID (product_id)"
-            rules={[{ required: true }]}>
-            <InputNumber style={{ width: '100%' }} />
-          </Form.Item>
-          <Form.Item name="sample_boxes" label="샘플 박스 수"
-            rules={[{ required: true }]}>
-            <InputNumber style={{ width: '100%' }} min={1} />
-          </Form.Item>
-          <Form.Item name="result" label="검수 결과"
-            rules={[{ required: true }]}>
-            <Select options={[
-              { value: 'PASS', label: 'PASS — 합격' },
-              { value: 'FAIL', label: 'FAIL — 불합격' },
-              { value: 'CONDITIONAL', label: 'CONDITIONAL — 조건부 합격' },
-            ]} />
-          </Form.Item>
-          <Form.Item name="note" label="비고"><Input.TextArea rows={2} /></Form.Item>
-        </Form>
-      </Modal>
-
-      {/* 입고 확정 모달 */}
-      <Modal
-        title="입고 확정 — 로트별 박스 수 및 유통기한 입력"
-        open={receiveOpen}
-        onOk={handleReceive}
-        onCancel={() => setReceiveOpen(false)}
-        okText="입고 확정"
-        cancelText="취소"
-        width={600}
-      >
-        <Form form={receiveForm} layout="vertical" style={{ marginTop: 12 }}>
-          {poLines.map(pl => (
-            <Card key={pl.po_line_id} size="small" style={{ marginBottom: 8 }}
-              title={`${pl.product_code || `상품 #${pl.product_id}`} ${pl.name_ja || ''}`}>
-              <Space>
-                <Form.Item name={`qty_${pl.po_line_id}`} label="입고 박스" style={{ margin: 0 }}>
-                  <InputNumber min={0} />
-                </Form.Item>
-                <Form.Item name={`exp_${pl.po_line_id}`} label="유통기한" style={{ margin: 0 }}>
-                  <DatePicker format="YYYY-MM-DD" />
-                </Form.Item>
-              </Space>
-            </Card>
-          ))}
-        </Form>
-      </Modal>
-    </Space>
+    <div style={{
+      flex: 1, minWidth: 56, position: 'relative', textAlign: 'center',
+      borderRadius: 'var(--radius-md)', padding: '10px 4px 8px',
+      border: isCurrent ? '2px solid var(--border-info)' : '0.5px solid var(--border-tertiary)',
+      background: isCurrent ? 'var(--bg-info)' : undefined,
+    }}>
+      {isCurrent && (
+        <div style={{
+          position: 'absolute', top: -9, left: '50%', transform: 'translateX(-50%)',
+          fontSize: 9, background: 'var(--text-info)', color: '#fff',
+          padding: '1px 6px', borderRadius: 6,
+        }}>NOW</div>
+      )}
+      <div style={{
+        width: 30, height: 30, borderRadius: '50%', margin: '0 auto 6px',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        background: done ? 'var(--text-info)' : undefined,
+        border: !done ? '1px solid var(--border-secondary)' : undefined,
+      }}>
+        <Icon size={16} color={done ? '#fff' : 'var(--text-tertiary)'} />
+      </div>
+      <div style={{ fontSize: 11, fontWeight: done ? 500 : 400, color: done ? 'var(--text-primary)' : 'var(--text-tertiary)' }}>
+        {step.label}
+      </div>
+      <div style={{ fontSize: 11, color: done ? 'var(--text-secondary)' : 'var(--text-tertiary)' }}>
+        {dateVal ? dayjs(dateVal).format('MM-DD') : '—'}
+      </div>
+    </div>
   )
 }
 
-const NEXT_STATUS_LABELS: Record<string, string> = {
-  DEPARTED: '입항',
-  ARRIVED: '내륙운송',
-  IN_TRANSIT: '검수',
-  INSPECTING: '통관',
-  CUSTOMS: '입고완료',
+export default function ShipmentsPage() {
+  const [shipments, setShipments] = useState<ShipmentListItem[]>([])
+  const [selected, setSelected] = useState<ShipmentDetail | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [detailLoading, setDetailLoading] = useState(false)
+  const [checked, setChecked] = useState<Record<string, boolean>>({})
+
+  useEffect(() => {
+    getShipments()
+      .then(r => {
+        setShipments(r.data)
+        if (r.data.length > 0) loadDetail(r.data[0].shipment_id)
+      })
+      .finally(() => setLoading(false))
+  }, [])
+
+  const loadDetail = (id: number) => {
+    setDetailLoading(true)
+    getShipment(id)
+      .then(r => setSelected(r.data))
+      .finally(() => setDetailLoading(false))
+  }
+
+  const toggleCheck = (key: string) =>
+    setChecked(prev => ({ ...prev, [key]: !prev[key] }))
+
+  const stepDates: Record<string, string | null | undefined> = selected ? {
+    departure:         selected.departure_date,
+    arrival:           selected.arrival_date,
+    inland:            selected.inland_date,
+    inspection:        selected.inspection_date,
+    customs_clearance: selected.customs_clearance_date,
+    received:          selected.received_date,
+  } : {}
+
+  const getCurrentStep = (s: ShipmentDetail) => {
+    if (!s.departure_date) return 'departure'
+    if (!s.arrival_date) return 'arrival'
+    if (!s.inland_date) return 'inland'
+    if (!s.inspection_date) return 'inspection'
+    if (!s.customs_clearance_date) return 'customs_clearance'
+    return 'received'
+  }
+
+  const currentStep = selected ? getCurrentStep(selected) : ''
+  const pendingDocsCount = DOCS_CHECKLIST.flatMap(g => g.items).filter(i => !checked[i.key]).length
+
+  return (
+    <div className="page">
+      <div className="page-header">
+        <h1 className="page-title">모듈 5 · 이송·검사·통관</h1>
+        <button className="btn btn-info"><IconPlus size={13} /> 선박 추가</button>
+      </div>
+
+      <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+        {/* Left: shipment list */}
+        <div style={{ flex: '0 0 180px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {loading && <div style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>로딩 중…</div>}
+          {shipments.map(s => {
+            const isSel = selected?.shipment_id === s.shipment_id
+            return (
+              <div
+                key={s.shipment_id}
+                onClick={() => loadDetail(s.shipment_id)}
+                style={{
+                  background: 'var(--bg-primary)',
+                  border: isSel ? '2px solid var(--border-info)' : '0.5px solid var(--border-tertiary)',
+                  borderRadius: 'var(--radius-lg)',
+                  padding: '10px 12px',
+                  cursor: 'pointer',
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ fontWeight: 500 }}>V-{String(s.shipment_id).padStart(3, '0')}</span>
+                  <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{s.container_count} CNT</span>
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 4 }}>
+                  {s.departure_date ?? '—'} → {s.arrival_date ?? '—'}
+                </div>
+                <div style={{ marginTop: 4 }}>
+                  <span className={`chip ${STATUS_CHIP[s.status] ?? 'chip-default'}`}>{s.status}</span>
+                </div>
+              </div>
+            )
+          })}
+          {!loading && shipments.length === 0 && (
+            <div style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>
+              선적 없음. 모듈 4에서 팔레트 확정 후 선박을 추가하세요.
+            </div>
+          )}
+        </div>
+
+        {/* Right: detail */}
+        {detailLoading ? (
+          <div style={{ flex: 1, color: 'var(--text-tertiary)', fontSize: 12 }}>로딩 중…</div>
+        ) : selected ? (
+          <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 12 }}>
+            {/* Schedule card */}
+            <div className="card">
+              <div style={{ marginBottom: 14, display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ border: '0.5px solid var(--border-secondary)', borderRadius: 'var(--radius-md)', padding: '6px 12px', fontWeight: 500 }}>
+                  V-{String(selected.shipment_id).padStart(3, '0')}
+                </span>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 10, marginBottom: 14 }}>
+                {STEPS.map(step => (
+                  <div key={step.key}>
+                    <div className="form-label" style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 4 }}>
+                      <step.Icon size={12} /> {step.label}
+                    </div>
+                    <div style={{ border: '0.5px solid var(--border-secondary)', borderRadius: 'var(--radius-md)', padding: '7px 10px', fontSize: 13, color: stepDates[step.key] ? 'var(--text-primary)' : 'var(--text-tertiary)' }}>
+                      {stepDates[step.key] ? dayjs(stepDates[step.key]!).format('YYYY-MM-DD') : '년. 월. 일.'}
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Stepper */}
+              <div style={{ borderTop: '0.5px solid var(--border-tertiary)', paddingTop: 14 }}>
+                <div className="stepper">
+                  {STEPS.map((step, idx) => (
+                    <>
+                      {idx > 0 && (
+                        <div
+                          key={`conn-${idx}`}
+                          className="step-connector"
+                          style={{ background: stepDates[STEPS[idx - 1].key] ? 'var(--text-info)' : 'var(--border-tertiary)' }}
+                        />
+                      )}
+                      <StepItem
+                        key={step.key}
+                        step={step}
+                        dateVal={stepDates[step.key]}
+                        isCurrent={step.key === currentStep}
+                      />
+                    </>
+                  ))}
+                </div>
+                <div style={{ fontSize: 12, color: 'var(--text-secondary)', textAlign: 'center', marginTop: 10 }}>
+                  현재 단계: <span style={{ color: 'var(--text-info)', fontWeight: 500 }}>
+                    {STEPS.find(s => s.key === currentStep)?.label ?? '완료'}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Customs checklist */}
+            <div className="card">
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, flexWrap: 'wrap', gap: 6 }}>
+                <span style={{ fontWeight: 500 }}>
+                  V-{String(selected.shipment_id).padStart(3, '0')} · 통관 진행
+                </span>
+              </div>
+              {pendingDocsCount > 0 && (
+                <div className="alert alert-warning" style={{ marginBottom: 12 }}>
+                  <IconAlertTriangle size={13} style={{ flexShrink: 0 }} />
+                  미완 서류 {pendingDocsCount}건 대기 — 완료 후 다음 단계로 진행됩니다.
+                </div>
+              )}
+
+              {DOCS_CHECKLIST.map(group => {
+                const allDone = group.items.every(i => checked[i.key])
+                return (
+                  <div key={group.group}>
+                    <div style={{ fontSize: 12, fontWeight: 500, margin: '14px 0 6px', display: 'flex', alignItems: 'center', gap: 8, color: allDone ? 'var(--text-success)' : 'var(--text-secondary)' }}>
+                      {allDone ? <IconCircleCheck size={14} /> : <IconLoader size={14} />}
+                      {group.group}
+                    </div>
+                    {group.items.map(item => {
+                      const done = checked[item.key]
+                      return (
+                        <div key={item.key} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 10px', border: `0.5px solid ${done ? 'var(--border-tertiary)' : 'var(--border-warning)'}`, borderRadius: 'var(--radius-md)', marginBottom: 6 }}>
+                          {done
+                            ? <IconCircleCheck size={14} color="var(--text-success)" />
+                            : <IconCircle size={14} color="var(--text-warning)" />
+                          }
+                          <span style={{ flex: 1, fontSize: 12 }}>{item.label}</span>
+                          <button
+                            className={`btn ${done ? '' : 'btn-info'}`}
+                            style={{ fontSize: 11, padding: '3px 12px' }}
+                            onClick={() => toggleCheck(item.key)}
+                          >
+                            {done ? '완료' : '등록'}
+                          </button>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        ) : (
+          <div className="card" style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-tertiary)', fontSize: 13, minHeight: 200 }}>
+            선적을 선택하세요.
+          </div>
+        )}
+      </div>
+    </div>
+  )
 }

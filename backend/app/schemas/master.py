@@ -5,6 +5,12 @@ from pydantic import BaseModel, EmailStr, field_validator
 
 # ── TemperatureTier ─────────────────────────────────────────────────────────
 
+class TemperatureTierUpdate(BaseModel):
+    review_cycle_months: Optional[int] = None
+    lead_time_months: Optional[int] = None
+    shelf_life_months: Optional[int] = None
+
+
 class TemperatureTierRead(BaseModel):
     model_config = {"from_attributes": True}
 

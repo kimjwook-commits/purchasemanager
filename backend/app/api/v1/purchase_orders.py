@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session, joinedload
 
 from app.api.deps import DB, CurrentUser, require_permission
-from app.models.master import Exporter
+from app.models.master import Brewery, Exporter
 from app.models.order import PoLine, PurchaseOrder
 from app.models.product import ExporterProduct, Product
 from app.schemas.order import (
@@ -61,7 +61,7 @@ def _enrich_po(db: Session, po: PurchaseOrder) -> PurchaseOrderRead:
 def _enrich_line(db: Session, pol: PoLine) -> PoLineRead:
     product = (
         db.query(Product)
-        .options(joinedload(Product.tier))
+        .options(joinedload(Product.tier), joinedload(Product.brewery))
         .filter(Product.product_id == pol.product_id)
         .first()
     )
@@ -74,6 +74,8 @@ def _enrich_line(db: Session, pol: PoLine) -> PoLineRead:
         product_code=product.product_code if product else None,
         name_ja=product.name_ja if product else None,
         tier_code=product.tier.code if product and product.tier else None,
+        brewery_id=product.brewery_id if product else None,
+        brewery_name=product.brewery.name if product and product.brewery else None,
         order_boxes=pol.order_boxes,
         order_layers=pol.order_layers,
         unit_price=float(pol.unit_price) if pol.unit_price else None,

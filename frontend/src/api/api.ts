@@ -4,6 +4,7 @@ import type {
   SupplyPrice, PlanRun, PlanLine, MonthSummary, PlanAlert,
   PurchaseOrder, PoLine, KanbanBoard, PackingPlanResult,
   ShipmentListItem, ShipmentDetail, InspectionRead, InventoryLotRead,
+  FxRate, DemandActualRead, DemandActualSummary, InvLotRead, InvLotSummary,
 } from './types'
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
@@ -25,9 +26,30 @@ export const getProducts = (params?: { q?: string; tier?: string; exporter_id?: 
 
 export const getExporterProducts = (params?: { exporter_id?: number; product_id?: number }) =>
   client.get<ExporterProduct[]>('/v1/exporter-products/', { params })
+export const bulkCreateExporterProducts = (exporter_id: number, product_codes: string[]) =>
+  client.post<{ created: number; skipped: number; errors: string[] }>('/v1/exporter-products/bulk', {
+    exporter_id, items: product_codes.map(c => ({ product_code: c })),
+  })
 
-export const getSupplyPrices = (ep_id: number) =>
-  client.get<SupplyPrice[]>('/v1/supply-prices/', { params: { ep_id } })
+export const getTiers = () =>
+  client.get<import('./types').TemperatureTier[]>('/v1/master/temperature-tiers')
+export const updateTier = (tier_id: number, data: { review_cycle_months?: number; lead_time_months?: number; shelf_life_months?: number }) =>
+  client.patch<import('./types').TemperatureTier>(`/v1/master/temperature-tiers/${tier_id}`, data)
+export const updateContainerSpec = (spec_id: number, data: { max_pallets?: number; cost_usd?: number }) =>
+  client.patch<import('./types').ContainerSpec>(`/v1/master/container-specs/${spec_id}`, data)
+
+export const createProduct = (data: {
+  product_code: string; name_ja: string; name_ko?: string
+  brewery_id?: number; tier_id: number
+  boxes_per_pallet?: number; volume_ml?: number; alcohol_pct?: number
+}) => client.post<import('./types').Product>('/v1/products/', data)
+
+export const getSupplyPrices = (params?: { ep_id?: number; exporter_id?: number; current_only?: boolean }) =>
+  client.get<SupplyPrice[]>('/v1/supply-prices/', { params })
+export const getCurrentSupplyPrices = (exporter_id: number) =>
+  client.get<SupplyPrice[]>('/v1/supply-prices/current', { params: { exporter_id } })
+export const getContainerSpecs = () =>
+  client.get<import('./types').ContainerSpec[]>('/v1/master/container-specs')
 
 export const createSupplyPrice = (data: { ep_id: number; supply_price: number; currency?: string; effective_date: string; brewery_price?: number }) =>
   client.post<SupplyPrice>('/v1/supply-prices/', data)
@@ -97,3 +119,26 @@ export const confirmContainerPlan = (po_id: number) =>
   client.post('/v1/container-plan/confirm', { po_id })
 export const getPackingList = (po_id: number) =>
   client.get(`/v1/container-plan/${po_id}/packing-list`)
+
+// ── FX Rate ───────────────────────────────────────────────────────────────────
+export const getFxRates = (params?: { base_currency?: string; quote_currency?: string }) =>
+  client.get<FxRate[]>('/v1/fx-rates/', { params })
+export const getLatestFxRates = () =>
+  client.get<FxRate[]>('/v1/fx-rates/latest')
+export const createFxRate = (data: { base_currency: string; quote_currency: string; rate_date: string; rate: number; source?: string }) =>
+  client.post<FxRate>('/v1/fx-rates/', data)
+export const deleteFxRate = (rate_id: number) =>
+  client.delete(`/v1/fx-rates/${rate_id}`)
+
+// ── Inventory / Demand ────────────────────────────────────────────────────────
+export const getDemandActual = (params?: { product_id?: number; ym_from?: string; ym_to?: string }) =>
+  client.get<DemandActualRead[]>('/v1/inventory/demand-actual', { params })
+export const bulkUpsertDemandActual = (rows: { product_code: string; ym: string; qty_boxes: number }[], overwrite = true) =>
+  client.post<DemandActualSummary>('/v1/inventory/demand-actual/bulk', { rows, overwrite })
+
+export const getInventoryLots = (params?: { product_id?: number; zone_id?: number; status?: string }) =>
+  client.get<InvLotRead[]>('/v1/inventory/lots', { params })
+export const getInventoryLotsSummary = () =>
+  client.get<InvLotSummary>('/v1/inventory/lots/summary')
+export const registerInitialLots = (rows: { product_code: string; zone_code: string; lot_no: string; qty_boxes: number; mfg_date?: string; exp_date?: string }[]) =>
+  client.post<{ created: number; skipped: number }>('/v1/inventory/lots/initial', { rows })

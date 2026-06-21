@@ -1,18 +1,21 @@
-import { Form, Input, Button, Card, Typography, message } from 'antd'
-import { UserOutlined, LockOutlined } from '@ant-design/icons'
+import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { IconUser, IconLock } from '@tabler/icons-react'
 import { login } from '../api/api'
-
-const { Title, Text } = Typography
 
 export default function LoginPage() {
   const navigate = useNavigate()
-  const [form] = Form.useForm()
-  const [loading, setLoading] = Form.useWatch ? [false] : [false]
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
 
-  const handleSubmit = async (values: { username: string; password: string }) => {
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setError('')
+    setLoading(true)
     try {
-      const res = await login(values.username, values.password)
+      const res = await login(username, password)
       localStorage.setItem('pm_token', res.data.access_token)
       localStorage.setItem('pm_user', JSON.stringify({
         user_id: res.data.user_id,
@@ -21,39 +24,90 @@ export default function LoginPage() {
       }))
       navigate('/')
     } catch {
-      message.error('아이디 또는 비밀번호를 확인해주세요')
+      setError('아이디 또는 비밀번호를 확인해주세요.')
+    } finally {
+      setLoading(false)
     }
   }
 
   return (
     <div style={{
-      minHeight: '100vh',
-      background: 'linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%)',
+      minHeight: '100dvh',
+      width: '100%',
+      background: '#ecebe7',
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'center',
+      fontFamily: 'var(--font)',
     }}>
-      <Card style={{ width: 380, borderRadius: 12, boxShadow: '0 20px 60px rgba(0,0,0,0.4)' }}>
-        <div style={{ textAlign: 'center', marginBottom: 32 }}>
-          <div style={{ fontSize: 40, marginBottom: 8 }}>🍶</div>
-          <Title level={3} style={{ margin: 0, color: '#1a1a2e' }}>PurchaseMaster</Title>
-          <Text type="secondary">일본 사케 수입 구매관리 시스템</Text>
+      <div style={{
+        background: '#fff',
+        border: '0.5px solid var(--border-tertiary)',
+        borderRadius: 'var(--radius-lg)',
+        padding: '36px 40px',
+        width: 360,
+        boxShadow: '0 2px 12px rgba(0,0,0,0.07)',
+      }}>
+        {/* Logo */}
+        <div style={{ textAlign: 'center', marginBottom: 28 }}>
+          <div style={{ fontSize: 36, marginBottom: 10 }}>🍶</div>
+          <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--text-primary)', letterSpacing: 0.2 }}>
+            PurchaseMaster
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginTop: 4 }}>
+            일본 사케 발주·물류 관리 시스템
+          </div>
         </div>
 
-        <Form form={form} onFinish={handleSubmit} layout="vertical" size="large">
-          <Form.Item name="username" rules={[{ required: true, message: '아이디를 입력하세요' }]}>
-            <Input prefix={<UserOutlined />} placeholder="아이디" />
-          </Form.Item>
-          <Form.Item name="password" rules={[{ required: true, message: '비밀번호를 입력하세요' }]}>
-            <Input.Password prefix={<LockOutlined />} placeholder="비밀번호" />
-          </Form.Item>
-          <Form.Item style={{ marginBottom: 0 }}>
-            <Button type="primary" htmlType="submit" block style={{ height: 44 }}>
-              로그인
-            </Button>
-          </Form.Item>
-        </Form>
-      </Card>
+        <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div>
+            <div className="form-label" style={{ marginBottom: 4 }}>아이디</div>
+            <div style={{ position: 'relative' }}>
+              <IconUser size={14} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-tertiary)' }} />
+              <input
+                className="pm-input"
+                type="text"
+                placeholder="아이디"
+                value={username}
+                onChange={e => setUsername(e.target.value)}
+                style={{ paddingLeft: 30 }}
+                required
+              />
+            </div>
+          </div>
+
+          <div>
+            <div className="form-label" style={{ marginBottom: 4 }}>비밀번호</div>
+            <div style={{ position: 'relative' }}>
+              <IconLock size={14} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-tertiary)' }} />
+              <input
+                className="pm-input"
+                type="password"
+                placeholder="비밀번호"
+                value={password}
+                onChange={e => setPassword(e.target.value)}
+                style={{ paddingLeft: 30 }}
+                required
+              />
+            </div>
+          </div>
+
+          {error && (
+            <div style={{ fontSize: 12, color: 'var(--text-danger)', background: 'var(--bg-danger)', border: '0.5px solid var(--border-danger)', borderRadius: 'var(--radius-md)', padding: '7px 10px' }}>
+              {error}
+            </div>
+          )}
+
+          <button
+            type="submit"
+            className="btn btn-primary"
+            disabled={loading}
+            style={{ width: '100%', justifyContent: 'center', padding: '10px', fontSize: 13, marginTop: 4 }}
+          >
+            {loading ? '로그인 중…' : '로그인'}
+          </button>
+        </form>
+      </div>
     </div>
   )
 }
