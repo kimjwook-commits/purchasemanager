@@ -5,6 +5,7 @@ import {
   IconSearch, IconChevronLeft, IconChevronRight, IconSnowflake,
   IconUpload, IconX, IconCircleCheck, IconCircleX,
   IconLock, IconLockOpen, IconDownload, IconSun,
+  IconRefresh, IconShoppingCart,
 } from '@tabler/icons-react'
 import {
   getPlanRuns, getPlanLines, getPlanSummary, runPlan, approvePlan,
@@ -125,7 +126,8 @@ export default function ForecastPage() {
   const [centerYm, setCenterYm]   = useState(todayYm)
   const [search, setSearch]       = useState('')
   const [loading, setLoading]     = useState(true)
-  const [running, setRunning]     = useState(false)
+  const [running, setRunning]         = useState(false)
+  const [forecasting, setForecasting] = useState(false)
   const [showRunModal, setShowRunModal] = useState(false)
   const [editMode, setEditMode]   = useState(false)
   const [editCell, setEditCell]   = useState<{ productId: number; ym: string; planLineId: number | null } | null>(null)
@@ -556,6 +558,14 @@ export default function ForecastPage() {
   }
 
   // ── handlers ─────────────────────────────────────────────────────────────
+  const handleRunForecast = async () => {
+    setForecasting(true)
+    try {
+      const r = await getForecastDemand({ horizon: 12 })
+      setForecastData(r.data ?? [])
+    } finally { setForecasting(false) }
+  }
+
   const handleRunPlan = async () => {
     setRunning(true)
     try {
@@ -602,7 +612,7 @@ export default function ForecastPage() {
         <div>
           <h1 className="page-title">월별 발주 플래너</h1>
           <p style={{ fontSize: 11, color: 'var(--text-tertiary)', margin: '2px 0 0' }}>
-            출고(병) · 발주(박스) · 재고(병) 실시간 계산 — <span style={{ color: 'var(--text-danger)' }}>음수 재고 = 발주 필요</span> · 계획 실행 버튼으로 발주량 자동 산출
+            출고(병) · 발주(박스) · 재고(병) 실시간 계산 — <span style={{ color: 'var(--text-danger)' }}>음수 재고 = 발주 필요</span>
           </p>
         </div>
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
@@ -633,9 +643,13 @@ export default function ForecastPage() {
           <button className="btn" onClick={() => { setShowUpload(true); setParsedFile(null); setUploadMsg(null); setSimpleStockRows([]); setSimpleActualRows([]) }}>
             <IconUpload size={13} /> 실출고 업로드
           </button>
-          {/* Run plan */}
+          {/* 출고예측 */}
+          <button className="btn" onClick={handleRunForecast} disabled={forecasting}>
+            <IconRefresh size={13} /> {forecasting ? '예측 중…' : '출고예측'}
+          </button>
+          {/* 발주예측 */}
           <button className="btn btn-info" onClick={() => setShowRunModal(true)}>
-            <IconPlayerPlay size={13} /> 계획 실행
+            <IconShoppingCart size={13} /> 발주예측
           </button>
           {/* Search */}
           <div style={{ position: 'relative' }}>
@@ -1324,7 +1338,7 @@ export default function ForecastPage() {
         <div className="modal-overlay" onClick={() => setShowRunModal(false)}>
           <div className="modal-box" onClick={e => e.stopPropagation()}>
             <div className="modal-header">
-              <span className="modal-title">발주계획 실행</span>
+              <span className="modal-title">발주예측 실행</span>
               <button className="btn" style={{ padding: '2px 8px' }} onClick={() => setShowRunModal(false)}>✕</button>
             </div>
             <div className="form-field">

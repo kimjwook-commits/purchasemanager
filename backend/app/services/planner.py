@@ -12,6 +12,7 @@ Module 1 — R,S (Periodic Review, Order-Up-To) 발주계획 엔진
 타당성 조건: review_cycle + lead_time ≤ shelf_life_months
 """
 import math
+import statistics
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -46,6 +47,28 @@ def add_months(ym: str, n: int) -> str:
 def prev_ym_list(ym: str, n: int) -> list[str]:
     """ym 기준 과거 n개월 목록 (과거→현재 순)"""
     return [add_months(ym, -(n - i)) for i in range(n)]
+
+
+SPIKE_NEIGHBOR_MULT = 2.5   # 이웃달 대비 이 배수 초과면 스파이크로 간주
+
+
+def _smooth_spikes(history: list[int]) -> list[int]:
+    """주변 달 중앙값 대비 SPIKE_NEIGHBOR_MULT 초과 값을 이웃 평균으로 대체."""
+    n = len(history)
+    if n < 3:
+        return history
+    result = list(history)
+    for i in range(n):
+        if result[i] <= 0:
+            continue
+        neighbors = [result[j] for j in (i - 1, i + 1, i - 2, i + 2)
+                     if 0 <= j < n and result[j] > 0]
+        if not neighbors:
+            continue
+        neighbor_med = statistics.median(neighbors)
+        if neighbor_med > 0 and result[i] > neighbor_med * SPIKE_NEIGHBOR_MULT:
+            result[i] = round(neighbor_med)
+    return result
 
 
 def ceil_to_layer(boxes: float, layer_boxes: int = LAYER_BOXES) -> int:
@@ -181,8 +204,9 @@ def _plan_one_sku(
             else tier.lead_time_months)
     shelf = tier.shelf_life_months
 
-    # 평균 수요
-    recent = [d for d in demand_history if d > 0]
+    # 평균 수요 (스파이크 평활화 후 계산)
+    smoothed = _smooth_spikes(demand_history)
+    recent = [d for d in smoothed if d > 0]
     avg_demand = sum(recent) / len(recent) if recent else DEFAULT_AVG_DEMAND
 
     # 안전재고: z × CV × sqrt(review+lead) × avg_demand
@@ -367,9 +391,10 @@ def run_plan(
             db.add(line)
         total_lines += len(lines)
 
-        # 수요 예측 저장
-        recent = [d for d in demand_history if d > 0]
-        avg_d = sum(recent) / len(recent) if recent else DEFAULT_AVG_DEMAND
+        # 수요 예측 저장 (스파이크 평활화 후 avg 사용)
+        smoothed_h = _smooth_spikes(demand_history)
+        recent_s = [d for d in smoothed_h if d > 0]
+        avg_d = sum(recent_s) / len(recent_s) if recent_s else DEFAULT_AVG_DEMAND
         _save_forecasts(db, plan_run.plan_run_id, product, avg_d, run_ym, horizon_months)
 
     db.commit()
