@@ -143,18 +143,16 @@ def _load_committed_map(
     plan_run 중 committed 라인이 첫 달(run_ym)이 아닌 달에도 존재하는 plan_run만
     '실제 확정 발주 run'으로 간주한다.
 
+    horizon에 상관없이 모든 월의 확정 라인을 반환 — plan horizon 이전 달(과거 실적)도 포함.
     반환: {product_id: {order_ym: PlanLine}}
     """
     from collections import defaultdict
-    horizon_yms = [add_months(run_ym, i) for i in range(horizon_months)]
 
+    # horizon 필터 없이 전체 is_committed=True 라인 조회
     rows = (
         db.query(PlanLine, PlanRun.run_ym.label("plan_run_ym"))
         .join(PlanRun, PlanLine.plan_run_id == PlanRun.plan_run_id)
-        .filter(
-            PlanLine.is_committed == True,
-            PlanLine.order_ym.in_(horizon_yms),
-        )
+        .filter(PlanLine.is_committed == True)
         .order_by(PlanLine.plan_run_id.desc())
         .all()
     )
@@ -377,6 +375,25 @@ def run_plan(
         on_order = onorder_map.get(product.product_id, 0)
         initial_position = on_hand + on_order
 
+        committed_orders = committed_map.get(product.product_id)
+
+        # run_ym 이전 과거 확정 라인을 먼저 복사 (발주예측이 미래만 다루므로 별도 보존)
+        if committed_orders:
+            for order_ym, src in committed_orders.items():
+                if order_ym < run_ym:
+                    db.add(PlanLine(
+                        plan_run_id=plan_run.plan_run_id,
+                        product_id=src.product_id,
+                        ep_id=src.ep_id,
+                        order_ym=src.order_ym,
+                        order_boxes=src.order_boxes,
+                        order_layers=src.order_layers,
+                        expected_arrival_ym=src.expected_arrival_ym,
+                        projected_inv_end=src.projected_inv_end,
+                        is_committed=True,
+                        alert=src.alert,
+                    ))
+
         lines = _plan_one_sku(
             product=product,
             demand_history=demand_history,
@@ -385,7 +402,7 @@ def run_plan(
             run_ym=run_ym,
             horizon_months=horizon_months,
             service_z=service_z,
-            committed_orders=committed_map.get(product.product_id),
+            committed_orders=committed_orders,
         )
         for line in lines:
             db.add(line)
