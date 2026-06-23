@@ -31,6 +31,8 @@ interface SpotCard {
   status:       CardStatus
   type:         CardType
   kr_qty:       number | null
+  committed_jun: number | null
+  committed_jul: number | null
 }
 
 // ── 상수 ────────────────────────────────────────────────────────────────────
@@ -75,12 +77,10 @@ const STATUS_TO_COL: Record<string, string> = {
   confirmed:     'confirmed',
 }
 
-// infer card type from product_code prefix (stub — real impl may use a type field)
-function inferType(code: string | null): CardType {
-  if (!code) return 'spot'
-  if (code.startsWith('PB')) return 'pb'
-  if (code.startsWith('S'))  return 'supplies'
-  return 'spot'
+function toCardType(productType: string | null): CardType {
+  if (productType === 'pb')       return 'pb'
+  if (productType === 'spot')     return 'spot'
+  return 'spot'  // 백엔드가 spot만 반환하므로 기본값 spot
 }
 
 // ── 단일 카드 컴포넌트 ───────────────────────────────────────────────────────
@@ -98,9 +98,10 @@ function SpotCardItem({
   const statusMeta = STATUS_META[card.status]
   const nextAction = NEXT_ACTION[card.status]
 
-  const isCold    = card.tier_code === 'cold'
-  const isAmb     = card.tier_code === 'ambient'
+  const isCold      = card.tier_code === 'cold'
+  const isAmb       = card.tier_code === 'ambient'
   const isConfirmed = card.status === 'confirmed'
+  const hasCommitted = card.committed_jun != null || card.committed_jul != null
 
   const handleAdvance = async () => {
     if (!nextAction) return
@@ -161,6 +162,34 @@ function SpotCardItem({
         {sourceLine}
       </div>
 
+      {/* 6·7월 확정 발주 실적 */}
+      {(card.committed_jun != null || card.committed_jul != null) && (
+        <div style={{
+          display: 'flex', gap: 4, marginBottom: 8,
+          background: '#eff6ff', borderRadius: 6, padding: '5px 8px',
+        }}>
+          <span style={{ fontSize: 9, color: '#1d4ed8', fontWeight: 600, whiteSpace: 'nowrap', alignSelf: 'center' }}>
+            확정 발주
+          </span>
+          {card.committed_jun != null && (
+            <span style={{
+              fontSize: 11, fontWeight: 700, background: '#fff',
+              border: '0.5px solid #bfdbfe', borderRadius: 4, padding: '2px 6px', color: '#1e40af',
+            }}>
+              6월 {card.committed_jun} CTN
+            </span>
+          )}
+          {card.committed_jul != null && (
+            <span style={{
+              fontSize: 11, fontWeight: 700, background: '#fff',
+              border: '0.5px solid #bfdbfe', borderRadius: 4, padding: '2px 6px', color: '#1e40af',
+            }}>
+              7월 {card.committed_jul} CTN
+            </span>
+          )}
+        </div>
+      )}
+
       {/* Quantity panes */}
       {card.status !== 'backlog' && (
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 8 }}>
@@ -194,7 +223,16 @@ function SpotCardItem({
       )}
 
       {/* Action row */}
-      {nextAction && (
+      {hasCommitted ? (
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          background: '#f0fdf4', border: '0.5px solid var(--text-success)',
+          borderRadius: 6, padding: '6px 10px', gap: 6,
+        }}>
+          <span style={{ fontSize: 13 }}>✓</span>
+          <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-success)' }}>확정</span>
+        </div>
+      ) : nextAction ? (
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
           <span style={{ fontSize: 10, color: 'var(--text-tertiary)' }}>다음:</span>
           <span style={{
@@ -219,9 +257,9 @@ function SpotCardItem({
             {holding ? '보류 중' : '보류'}
           </button>
         </div>
-      )}
+      ) : null}
 
-      {isConfirmed && (
+      {isConfirmed && !hasCommitted && (
         <div style={{ fontSize: 11, color: 'var(--text-success)', textAlign: 'center', marginTop: 4 }}>
           ✓ PO 생성으로 합류 예정
         </div>
@@ -242,7 +280,6 @@ export default function KanbanPage() {
 
   // filter state
   const [exporterTab, setExporterTab] = useState<number | 'all'>('all')
-  const [typeFilter,  setTypeFilter]  = useState<CardType | 'all'>('all')
 
   useEffect(() => {
     Promise.all([getPlanRuns(), getExporters()]).then(([pr, ex]) => {
@@ -276,8 +313,10 @@ export default function KanbanPage() {
             po_id:         line.po_id,
             po_no:         line.po_no,
             status:        colToStatus(col.column),
-            type:          inferType(line.product_code),
+            type:          toCardType(line.product_type),
             kr_qty:        col.column === 'pending_approval' || col.column === 'confirmed' ? line.order_boxes : null,
+            committed_jun: line.committed_jun,
+            committed_jul: line.committed_jul,
           })
         })
       })
@@ -293,12 +332,11 @@ export default function KanbanPage() {
     return exporters.filter(e => ids.has(e.exporter_id))
   }, [cards, exporters])
 
-  // 필터 적용
+  // 필터 적용 (수출자만, spot 필터는 백엔드에서 처리)
   const filteredCards = useMemo(() => cards.filter(c => {
     if (exporterTab !== 'all' && c.exporter_id !== exporterTab) return false
-    if (typeFilter  !== 'all' && c.type !== typeFilter)           return false
     return true
-  }), [cards, exporterTab, typeFilter])
+  }), [cards, exporterTab])
 
   // 열 그룹화: 미배정 + 연월별
   const columns = useMemo(() => {
@@ -408,23 +446,13 @@ export default function KanbanPage() {
           })}
         </div>
 
-        {/* Type filter chips */}
-        <div style={{ display: 'flex', gap: 4, marginLeft: 4 }}>
-          {(['all', 'spot', 'pb', 'supplies'] as const).map(t => (
-            <button
-              key={t}
-              onClick={() => setTypeFilter(t)}
-              style={{
-                padding: '4px 12px', borderRadius: 20, border: '0.5px solid var(--border)',
-                background: typeFilter === t ? 'var(--bg-secondary)' : '#fff',
-                fontWeight: typeFilter === t ? 600 : 400,
-                color: typeFilter === t ? 'var(--text-primary)' : 'var(--text-tertiary)',
-                fontSize: 12, fontFamily: 'var(--font)', cursor: 'pointer',
-              }}
-            >
-              {t === 'all' ? '전체' : t === 'spot' ? '스팟' : t === 'pb' ? 'PB' : '비품'}
-            </button>
-          ))}
+        {/* 상품마스터 spot 품목만 표시 (백엔드 필터) */}
+        <div style={{
+          display: 'inline-flex', alignItems: 'center', gap: 4,
+          background: 'var(--bg-info)', borderRadius: 20,
+          padding: '4px 12px', fontSize: 12, color: 'var(--text-info)', fontWeight: 600,
+        }}>
+          스팟 품목
         </div>
 
         {/* Status summary */}

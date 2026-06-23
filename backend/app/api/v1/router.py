@@ -3,6 +3,7 @@ from fastapi import APIRouter
 from app.api.v1 import (
     breweries,
     container_plan,
+    demand_forecast,
     exporter_products,
     exporters,
     fx_rates,
@@ -20,6 +21,7 @@ from app.api.v1 import (
 
 router = APIRouter(prefix="/api/v1")
 
+router.include_router(demand_forecast.router)
 router.include_router(exporters.router)
 router.include_router(breweries.router)
 router.include_router(master.router)

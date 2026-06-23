@@ -183,6 +183,19 @@ def bulk_create_products(
     return ProductBulkResult(created=created, updated=updated, skipped=skipped, errors=errors)
 
 
+@router.delete("/{product_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_product(
+    product_id: int,
+    db: DB,
+    _=Depends(require_permission("item_register")),
+):
+    obj = db.query(Product).filter(Product.product_id == product_id).first()
+    if not obj:
+        raise HTTPException(status_code=404, detail="상품을 찾을 수 없습니다")
+    db.delete(obj)
+    db.commit()
+
+
 @router.patch("/{product_id}", response_model=ProductRead)
 def update_product(
     product_id: int,

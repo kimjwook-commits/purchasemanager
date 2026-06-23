@@ -66,6 +66,7 @@ class KanbanLine(BaseModel):
     product_code: Optional[str]
     name_ja: Optional[str]
     tier_code: Optional[str]
+    product_type: Optional[str] = None   # regular / spot / pb
     order_ym: str
     order_boxes: int
     order_layers: int
@@ -73,8 +74,10 @@ class KanbanLine(BaseModel):
     exporter_id: Optional[int]
     exporter_code: Optional[str]
     alert: Optional[str]
-    po_id: Optional[int] = None      # confirmed 상태일 때 채워짐
+    po_id: Optional[int] = None
     po_no: Optional[str] = None
+    committed_jun: Optional[int] = None  # 6월 확정 발주(박스)
+    committed_jul: Optional[int] = None  # 7월 확정 발주(박스)
 
 
 class KanbanColumn(BaseModel):

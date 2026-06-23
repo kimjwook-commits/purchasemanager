@@ -173,6 +173,7 @@ export interface KanbanLine {
   product_code: string | null
   name_ja: string | null
   tier_code: string | null
+  product_type: string | null
   order_ym: string
   order_boxes: number
   order_layers: number
@@ -182,6 +183,8 @@ export interface KanbanLine {
   alert: string | null
   po_id: number | null
   po_no: string | null
+  committed_jun: number | null
+  committed_jul: number | null
 }
 
 export interface KanbanColumn {

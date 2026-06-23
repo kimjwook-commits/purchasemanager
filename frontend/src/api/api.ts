@@ -26,7 +26,7 @@ export const bulkCreateBreweries = (items: {
   name: string; name_ja?: string; country?: string; region?: string
 }[], upsert = false) => client.post<{ created: number; updated: number; skipped: number; errors: string[] }>('/v1/breweries/bulk', { items, upsert })
 
-export const getProducts = (params?: { q?: string; tier?: string; exporter_id?: number; page?: number; size?: number }) =>
+export const getProducts = (params?: { q?: string; tier?: string; exporter_id?: number; page?: number; size?: number; active_only?: boolean }) =>
   client.get<{ items: Product[]; total: number; page: number; size: number }>('/v1/products/', { params })
 
 export const getExporterProducts = (params?: { exporter_id?: number; product_id?: number }) =>
@@ -57,6 +57,9 @@ export const createProduct = (data: {
   volume_ml?: number; alcohol_pct?: number
 }) => client.post<import('./types').Product>('/v1/products/', data)
 
+export const deleteProduct = (product_id: number) =>
+  client.delete(`/v1/products/${product_id}`)
+
 export const updateProduct = (product_id: number, data: {
   name_ja?: string; name_ko?: string
   brewery_id?: number; tier_id?: number; product_type?: string
@@ -85,6 +88,9 @@ export const getPlanLines = (plan_run_id: number, params?: { order_ym?: string; 
   client.get<PlanLine[]>(`/v1/plan/runs/${plan_run_id}/lines`, { params })
 export const updatePlanLine = (plan_run_id: number, plan_line_id: number, data: { order_boxes: number }) =>
   client.patch<PlanLine>(`/v1/plan/runs/${plan_run_id}/lines/${plan_line_id}`, data)
+
+export const createPlanLine = (plan_run_id: number, data: { product_id: number; order_ym: string; order_boxes: number }) =>
+  client.post<PlanLine>(`/v1/plan/runs/${plan_run_id}/lines`, data)
 export const getPlanSummary = (plan_run_id: number) =>
   client.get<{ plan_run_id: number; run_ym: string; months: MonthSummary[] }>(`/v1/plan/runs/${plan_run_id}/summary`)
 export const getPlanAlerts = (plan_run_id: number) =>
@@ -155,6 +161,11 @@ export const deleteFxRate = (rate_id: number) =>
 // ── Inventory / Demand ────────────────────────────────────────────────────────
 export const getDemandActual = (params?: { product_id?: number; ym_from?: string; ym_to?: string }) =>
   client.get<DemandActualRead[]>('/v1/inventory/demand-actual', { params })
+
+export const getForecastDemand = (params?: { today_ym?: string; horizon?: number }) =>
+  client.get<{ product_code: string; product_id: number; ym: string; qty_boxes: number }[]>(
+    '/v1/demand-forecast', { params }
+  )
 export const bulkUpsertDemandActual = (rows: { product_code: string; ym: string; qty_boxes: number }[], overwrite = true) =>
   client.post<DemandActualSummary>('/v1/inventory/demand-actual/bulk', { rows, overwrite })
 

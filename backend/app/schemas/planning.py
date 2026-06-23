@@ -87,3 +87,11 @@ class PlanApproveRequest(BaseModel):
 
 class PlanLineUpdate(BaseModel):
     order_boxes: Optional[int] = None  # 수동 입력 박스수
+
+
+# ── 라인 수동 생성 ────────────────────────────────────────────────────────────
+
+class PlanLineCreate(BaseModel):
+    product_id: int
+    order_ym: str    # YYYY-MM
+    order_boxes: int

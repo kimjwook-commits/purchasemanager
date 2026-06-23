@@ -10,6 +10,7 @@ from app.models.product import Product
 from app.schemas.planning import (
     PlanAlert,
     PlanApproveRequest,
+    PlanLineCreate,
     PlanLineRead,
     PlanLineUpdate,
     PlanRollingSummary,
@@ -51,6 +52,10 @@ def _enrich_line(db: Session, line: PlanLine) -> PlanLineRead:
     product = db.query(Product).options(
         joinedload(Product.tier)
     ).filter(Product.product_id == line.product_id).first()
+    return _line_to_read(line, product)
+
+
+def _line_to_read(line: PlanLine, product) -> PlanLineRead:
     return PlanLineRead(
         plan_line_id=line.plan_line_id,
         plan_run_id=line.plan_run_id,
@@ -126,30 +131,50 @@ def get_plan_lines(
     has_alert: bool = False,
 ):
     """계획 라인 목록 — 필터: 발주월 / 온도티어 / committed / 경고"""
+    from app.models.master import TemperatureTier
     run = db.query(PlanRun).filter(PlanRun.plan_run_id == plan_run_id).first()
     if not run:
         raise HTTPException(status_code=404, detail="계획 실행을 찾을 수 없습니다")
 
-    q = db.query(PlanLine).filter(PlanLine.plan_run_id == plan_run_id)
+    # Product·Tier를 JOIN 한 방에 로드 (N+1 방지)
+    q = (
+        db.query(PlanLine, Product, TemperatureTier)
+        .join(Product, PlanLine.product_id == Product.product_id)
+        .outerjoin(TemperatureTier, Product.tier_id == TemperatureTier.tier_id)
+        .filter(PlanLine.plan_run_id == plan_run_id)
+    )
     if order_ym:
         q = q.filter(PlanLine.order_ym == order_ym)
     if committed_only:
         q = q.filter(PlanLine.is_committed == True)
     if has_alert:
         q = q.filter(PlanLine.alert.isnot(None))
-
-    lines = q.order_by(PlanLine.order_ym, PlanLine.product_id).all()
-
     if tier:
-        # tier 필터는 product join 필요 — 후처리
-        result = []
-        for line in lines:
-            enriched = _enrich_line(db, line)
-            if enriched.tier_code == tier:
-                result.append(enriched)
-        return result
+        q = q.join(TemperatureTier, Product.tier_id == TemperatureTier.tier_id, isouter=False).filter(
+            TemperatureTier.code == tier
+        )
 
-    return [_enrich_line(db, line) for line in lines]
+    rows = q.order_by(PlanLine.order_ym, PlanLine.product_id).all()
+
+    result = []
+    for line, product, t_tier in rows:
+        result.append(PlanLineRead(
+            plan_line_id=line.plan_line_id,
+            plan_run_id=line.plan_run_id,
+            product_id=line.product_id,
+            product_code=product.product_code,
+            name_ja=product.name_ja,
+            tier_code=t_tier.code if t_tier else None,
+            ep_id=line.ep_id,
+            order_ym=line.order_ym,
+            order_boxes=line.order_boxes,
+            order_layers=line.order_layers,
+            expected_arrival_ym=line.expected_arrival_ym,
+            projected_inv_end=line.projected_inv_end,
+            is_committed=line.is_committed,
+            alert=line.alert,
+        ))
+    return result
 
 
 @router.get("/runs/{plan_run_id}/alerts", response_model=list[PlanAlert])
@@ -251,6 +276,56 @@ def approve_plan_run(
     db.commit()
     db.refresh(run)
     return _enrich_run(db, run)
+
+
+def _add_months(ym: str, n: int) -> str:
+    year, month = map(int, ym.split('-'))
+    month += n
+    while month > 12: month -= 12; year += 1
+    while month < 1:  month += 12; year -= 1
+    return f"{year:04d}-{month:02d}"
+
+
+@router.post("/runs/{plan_run_id}/lines", response_model=PlanLineRead, status_code=200)
+def create_or_update_plan_line(
+    plan_run_id: int,
+    data: PlanLineCreate,
+    db: DB,
+    _=Depends(require_permission("plan_approve")),
+):
+    """발주 라인 수동 생성 — 동일 product+order_ym 존재 시 박스수 업데이트"""
+    run = db.query(PlanRun).filter(PlanRun.plan_run_id == plan_run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="계획 실행을 찾을 수 없습니다")
+
+    existing = db.query(PlanLine).filter(
+        PlanLine.plan_run_id == plan_run_id,
+        PlanLine.product_id == data.product_id,
+        PlanLine.order_ym == data.order_ym,
+    ).first()
+
+    arrival_ym = _add_months(data.order_ym, 1)
+    layers = math.ceil(data.order_boxes / BOXES_PER_PALLET) if data.order_boxes > 0 else 0
+
+    if existing:
+        existing.order_boxes = data.order_boxes
+        existing.order_layers = layers
+        db.commit()
+        db.refresh(existing)
+        return _enrich_line(db, existing)
+
+    line = PlanLine(
+        plan_run_id=plan_run_id,
+        product_id=data.product_id,
+        order_ym=data.order_ym,
+        order_boxes=data.order_boxes,
+        order_layers=layers,
+        expected_arrival_ym=arrival_ym,
+    )
+    db.add(line)
+    db.commit()
+    db.refresh(line)
+    return _enrich_line(db, line)
 
 
 @router.patch("/runs/{plan_run_id}/lines/{plan_line_id}", response_model=PlanLineRead)

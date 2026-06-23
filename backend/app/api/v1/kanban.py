@@ -30,6 +30,8 @@ def _build_kanban_line(
     exporter: Optional[Exporter],
     po_id: Optional[int],
     po_no: Optional[str],
+    committed_jun: Optional[int] = None,
+    committed_jul: Optional[int] = None,
 ) -> KanbanLine:
     return KanbanLine(
         plan_line_id=line.plan_line_id,
@@ -37,6 +39,7 @@ def _build_kanban_line(
         product_code=product.product_code if product else None,
         name_ja=product.name_ja if product else None,
         tier_code=product.tier.code if product and product.tier else None,
+        product_type=product.product_type if product else None,
         order_ym=line.order_ym,
         order_boxes=line.order_boxes,
         order_layers=line.order_layers,
@@ -46,6 +49,8 @@ def _build_kanban_line(
         alert=line.alert,
         po_id=po_id,
         po_no=po_no,
+        committed_jun=committed_jun,
+        committed_jul=committed_jul,
     )
 
 
@@ -73,7 +78,7 @@ def get_kanban_board(
     exporter_id: Optional[int] = None,
 ):
     """
-    발주계획 기준 Kanban 보드 반환
+    발주계획 기준 Kanban 보드 반환 (spot 품목만)
 
     컬럼: backlog → scheduled → pending_approval → confirmed
     """
@@ -81,19 +86,44 @@ def get_kanban_board(
     if not run:
         raise HTTPException(status_code=404, detail="계획 실행을 찾을 수 없습니다")
 
-    # 사전 로드
+    # spot 품목의 plan_run 내 committed 6·7월 발주 수량 사전 조회
+    committed_rows = (
+        db.query(PlanLine.product_id, PlanLine.order_ym, PlanLine.order_boxes)
+        .join(Product, PlanLine.product_id == Product.product_id)
+        .filter(
+            PlanLine.plan_run_id == plan_run_id,
+            PlanLine.is_committed == True,
+            PlanLine.order_ym.in_(["2026-06", "2026-07"]),
+            Product.product_type == "spot",
+        )
+        .all()
+    )
+    committed_jun_map: dict[int, int] = {}
+    committed_jul_map: dict[int, int] = {}
+    for pid, ym, boxes in committed_rows:
+        if ym == "2026-06":
+            committed_jun_map[pid] = boxes
+        elif ym == "2026-07":
+            committed_jul_map[pid] = boxes
+
+    # spot 품목의 plan_line 로드 (order_ym 오름차순)
     lines_q = (
         db.query(PlanLine)
         .options(
             joinedload(PlanLine.product).joinedload(Product.tier),
             joinedload(PlanLine.exporter_product).joinedload(ExporterProduct.exporter),
         )
-        .filter(PlanLine.plan_run_id == plan_run_id)
+        .join(Product, PlanLine.product_id == Product.product_id)
+        .filter(
+            PlanLine.plan_run_id == plan_run_id,
+            Product.product_type == "spot",
+        )
+        .order_by(PlanLine.product_id, PlanLine.order_ym)
     )
     if order_ym:
         lines_q = lines_q.filter(PlanLine.order_ym == order_ym)
     if exporter_id:
-        lines_q = lines_q.join(ExporterProduct).filter(
+        lines_q = lines_q.join(ExporterProduct, isouter=True).filter(
             ExporterProduct.exporter_id == exporter_id
         )
     all_lines = lines_q.all()
@@ -108,6 +138,9 @@ def get_kanban_board(
         "confirmed": [],
     }
 
+    # 미배정(backlog): 품목당 가장 이른 order_ym 1건만 표시 (중복 방지)
+    backlog_seen: set[int] = set()
+
     for line in all_lines:
         product = line.product
         ep = line.exporter_product
@@ -117,7 +150,11 @@ def get_kanban_board(
         po_id = po_info[0] if po_info else None
         po_no = po_info[1] if po_info else None
 
-        kl = _build_kanban_line(line, product, ep, exporter, po_id, po_no)
+        kl = _build_kanban_line(
+            line, product, ep, exporter, po_id, po_no,
+            committed_jun=committed_jun_map.get(line.product_id),
+            committed_jul=committed_jul_map.get(line.product_id),
+        )
 
         if po_id is not None:
             columns["confirmed"].append(kl)
@@ -126,7 +163,10 @@ def get_kanban_board(
         elif line.is_committed:
             columns["scheduled"].append(kl)
         else:
-            columns["backlog"].append(kl)
+            # 미배정: 품목당 최초 1건만
+            if line.product_id not in backlog_seen:
+                backlog_seen.add(line.product_id)
+                columns["backlog"].append(kl)
 
     LABELS = {
         "backlog": "대기",

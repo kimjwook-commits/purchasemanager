@@ -4,12 +4,12 @@ import {
   IconCloudUpload, IconRefresh, IconPlus, IconX, IconFileSpreadsheet,
   IconTable, IconBuilding, IconCurrencyYen, IconThermometer,
   IconPackage, IconCalendar, IconSnowflake, IconSun, IconCircleCheck,
-  IconUpload, IconDownload, IconPencil, IconLink,
+  IconUpload, IconDownload, IconPencil, IconLink, IconTrash,
 } from '@tabler/icons-react'
 import {
   getExporters, createExporter,
   getBreweries, createBrewery, bulkCreateBreweries,
-  getProducts, createProduct, updateProduct, bulkCreateProducts,
+  getProducts, createProduct, updateProduct, deleteProduct, bulkCreateProducts,
   getTiers, updateTier, getContainerSpecs, updateContainerSpec,
   getExporterProducts, bulkCreateExporterProducts,
   getLatestFxRates, getFxRates, createFxRate,
@@ -946,17 +946,60 @@ export default function SetupPage() {
 
   const [modal, setModal] = useState<'fx' | 'demand' | 'inv' | 'exporter' | 'brewery' | 'brewery-bulk' | 'product' | 'product-bulk' | 'mapping' | 'price' | null>(null)
   const [editingProduct, setEditingProduct] = useState<Product | null>(null)
+  const [deletingProduct, setDeletingProduct] = useState<Product | null>(null)
+  const [deleteLoading, setDeleteLoading] = useState(false)
   const [mappingExporterId, setMappingExporterId] = useState<number | undefined>(undefined)
   const [bulkUpsert, setBulkUpsert] = useState(false)
   const [breweryUpsert, setBreweryUpsert] = useState(false)
+
+  const handleDeleteProduct = async () => {
+    if (!deletingProduct) return
+    setDeleteLoading(true)
+    try {
+      await deleteProduct(deletingProduct.product_id)
+      setDeletingProduct(null)
+      load()
+    } catch {
+      // 삭제 실패 시 사용안함으로 자동 전환 제안
+      const yes = window.confirm(
+        '연관 데이터가 있어 완전 삭제가 불가합니다.\n"사용안함"으로 설정하시겠습니까?'
+      )
+      if (yes) await handleDeactivateProduct()
+    } finally {
+      setDeleteLoading(false)
+    }
+  }
+
+  const handleDeactivateProduct = async () => {
+    if (!deletingProduct) return
+    setDeleteLoading(true)
+    try {
+      await updateProduct(deletingProduct.product_id, { is_active: false })
+      setDeletingProduct(null)
+      load()
+    } catch {
+      alert('처리 실패. 다시 시도해주세요.')
+    } finally {
+      setDeleteLoading(false)
+    }
+  }
+
+  const handleReactivateProduct = async (p: Product) => {
+    try {
+      await updateProduct(p.product_id, { is_active: true })
+      load()
+    } catch {
+      alert('재활성 실패.')
+    }
+  }
 
   // 하위 호환용 (UploadModal handlers)
   const [demandCount, setDemandCount] = useState<number | null>(null)
 
   const load = () => {
     setLoading(true)
-    Promise.all([
-      getProducts({ size: 500 }),
+    Promise.allSettled([
+      getProducts({ size: 500, active_only: false }),
       getExporters(),
       getBreweries(),
       getExporterProducts(),
@@ -967,16 +1010,16 @@ export default function SetupPage() {
       getInventoryLotsSummary(),
       getDemandActual(),
     ]).then(([pr, ex, br, ep, ti, fx, sp, prices, inv, da]) => {
-      setProducts(pr.data.items ?? [])
-      setExporters(ex.data)
-      setBreweries(br.data)
-      setEps(ep.data)
-      setTiers(ti.data)
-      setFxRates(fx.data)
-      setSpecs(sp.data)
-      setPrices(prices.data)
-      setInvSummary(inv.data)
-      setDemandCount(da.data.length)
+      if (pr.status === 'fulfilled') setProducts(pr.value.data.items ?? [])
+      if (ex.status === 'fulfilled') setExporters(ex.value.data)
+      if (br.status === 'fulfilled') setBreweries(br.value.data)
+      if (ep.status === 'fulfilled') setEps(ep.value.data)
+      if (ti.status === 'fulfilled') setTiers(ti.value.data)
+      if (fx.status === 'fulfilled') setFxRates(fx.value.data)
+      if (sp.status === 'fulfilled') setSpecs(sp.value.data)
+      if (prices.status === 'fulfilled') setPrices(prices.value.data)
+      if (inv.status === 'fulfilled') setInvSummary(inv.value.data)
+      if (da.status === 'fulfilled') setDemandCount(da.value.data.length)
     }).finally(() => setLoading(false))
   }
   useEffect(() => { load() }, [])
@@ -1266,11 +1309,15 @@ export default function SetupPage() {
                   const brewery = p.brewery_id ? breweryById.get(p.brewery_id) : null
                   const sp = myEps.map(ep => priceByEp.get(ep.ep_id)).find(Boolean)
                   const exCodes = [...new Set(myEps.map(ep => exporters.find(e => e.exporter_id === ep.exporter_id)?.code).filter(Boolean))]
+                  const inactive = p.is_active === false
                   return (
-                    <tr key={p.product_id}>
+                    <tr key={p.product_id} style={{ opacity: inactive ? 0.45 : 1, background: inactive ? 'var(--bg-secondary)' : undefined }}>
                       <td style={{ paddingLeft: 12, fontFamily: 'monospace', fontSize: 11, fontWeight: 500 }}>{p.product_code}</td>
                       <td>
-                        <div style={{ fontSize: 12, fontWeight: 500 }}>{p.name_ja}</div>
+                        <div style={{ fontSize: 12, fontWeight: 500, display: 'flex', alignItems: 'center', gap: 6 }}>
+                          {p.name_ja}
+                          {inactive && <span className="chip chip-default" style={{ fontSize: 9, padding: '1px 5px' }}>사용안함</span>}
+                        </div>
                         {p.name_ko && <div style={{ fontSize: 10, color: 'var(--text-tertiary)' }}>{p.name_ko}</div>}
                       </td>
                       <td style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{brewery?.name ?? '—'}</td>
@@ -1306,13 +1353,35 @@ export default function SetupPage() {
                         {sp ? <><span style={{ fontWeight: 600 }}>{sp.supply_price.toLocaleString()}</span> <span style={{ color: 'var(--text-tertiary)', fontSize: 10 }}>{sp.currency}</span></> : <span style={{ color: 'var(--text-tertiary)' }}>—</span>}
                       </td>
                       <td style={{ textAlign: 'right', paddingRight: 8 }}>
-                        <button
-                          className="btn"
-                          style={{ padding: '2px 6px', fontSize: 10 }}
-                          onClick={() => { setEditingProduct(p); setModal('product') }}
-                        >
-                          <IconPencil size={11} />
-                        </button>
+                        <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
+                          {inactive ? (
+                            <button
+                              className="btn btn-success"
+                              style={{ padding: '2px 6px', fontSize: 10 }}
+                              title="다시 활성화"
+                              onClick={() => handleReactivateProduct(p)}
+                            >
+                              재활성
+                            </button>
+                          ) : (
+                            <>
+                              <button
+                                className="btn"
+                                style={{ padding: '2px 6px', fontSize: 10 }}
+                                onClick={() => { setEditingProduct(p); setModal('product') }}
+                              >
+                                <IconPencil size={11} />
+                              </button>
+                              <button
+                                className="btn btn-danger"
+                                style={{ padding: '2px 6px', fontSize: 10 }}
+                                onClick={() => setDeletingProduct(p)}
+                              >
+                                <IconTrash size={11} />
+                              </button>
+                            </>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   )
@@ -1730,6 +1799,39 @@ export default function SetupPage() {
           onClose={() => setModal(null)}
           onSubmit={handleInvUpload}
         />
+      )}
+
+      {/* 상품 삭제 확인 모달 */}
+      {deletingProduct && (
+        <div className="modal-overlay" onClick={() => setDeletingProduct(null)}>
+          <div className="modal-box" style={{ width: 380 }} onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <span className="modal-title">상품 삭제</span>
+              <button className="btn" style={{ padding: '2px 8px' }} onClick={() => setDeletingProduct(null)}>
+                <IconX size={14} />
+              </button>
+            </div>
+            <div style={{ padding: '16px 20px', fontSize: 13 }}>
+              <p style={{ marginBottom: 8 }}>아래 상품을 삭제하시겠습니까?</p>
+              <div style={{ background: 'var(--bg-secondary)', borderRadius: 6, padding: '10px 14px', fontSize: 12 }}>
+                <div style={{ fontWeight: 600 }}>{deletingProduct.name_ja}</div>
+                <div style={{ color: 'var(--text-tertiary)', fontFamily: 'monospace', marginTop: 2 }}>{deletingProduct.product_code}</div>
+              </div>
+              <p style={{ marginTop: 10, fontSize: 11, color: 'var(--text-danger)' }}>
+                연관된 발주·재고·실출고 데이터가 있으면 삭제가 거부됩니다.
+              </p>
+            </div>
+            <div className="modal-footer">
+              <button className="btn" onClick={() => setDeletingProduct(null)}>취소</button>
+              <button className="btn btn-warning" disabled={deleteLoading} onClick={handleDeactivateProduct}>
+                {deleteLoading ? '처리 중…' : '사용안함으로 설정'}
+              </button>
+              <button className="btn btn-danger" disabled={deleteLoading} onClick={handleDeleteProduct}>
+                {deleteLoading ? '삭제 중…' : <><IconTrash size={13} /> 완전 삭제</>}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )

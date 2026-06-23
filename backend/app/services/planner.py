@@ -111,6 +111,52 @@ def _next_version(db: Session, run_ym: str) -> int:
     return (max_v or 0) + 1
 
 
+def _load_committed_map(
+    db: Session, run_ym: str, horizon_months: int
+) -> dict[int, dict[str, "PlanLine"]]:
+    """사용자가 직접 확정한 is_committed=True 라인을 로드.
+
+    알고리즘이 자동으로 is_committed=True를 설정한 라인(첫 달만)을 배제하기 위해:
+    plan_run 중 committed 라인이 첫 달(run_ym)이 아닌 달에도 존재하는 plan_run만
+    '실제 확정 발주 run'으로 간주한다.
+
+    반환: {product_id: {order_ym: PlanLine}}
+    """
+    from collections import defaultdict
+    horizon_yms = [add_months(run_ym, i) for i in range(horizon_months)]
+
+    rows = (
+        db.query(PlanLine, PlanRun.run_ym.label("plan_run_ym"))
+        .join(PlanRun, PlanLine.plan_run_id == PlanRun.plan_run_id)
+        .filter(
+            PlanLine.is_committed == True,
+            PlanLine.order_ym.in_(horizon_yms),
+        )
+        .order_by(PlanLine.plan_run_id.desc())
+        .all()
+    )
+
+    # 알고리즘이 자동 committed한 plan_run은 제외:
+    # 첫 달(plan_run.run_ym)이 아닌 달에 confirmed 라인이 있는 plan_run = 사용자 확정
+    genuine_run_ids: set[int] = set()
+    for line, plan_run_ym in rows:
+        if line.order_ym != plan_run_ym:
+            genuine_run_ids.add(line.plan_run_id)
+
+    best: dict[tuple, PlanLine] = {}
+    for line, _ in rows:
+        if line.plan_run_id not in genuine_run_ids:
+            continue
+        key = (line.product_id, line.order_ym)
+        if key not in best:
+            best[key] = line
+
+    result: dict[int, dict[str, PlanLine]] = defaultdict(dict)
+    for (pid, ym), line in best.items():
+        result[pid][ym] = line
+    return result
+
+
 # ── SKU별 계획 계산 ──────────────────────────────────────────────────────────
 
 def _plan_one_sku(
@@ -121,8 +167,11 @@ def _plan_one_sku(
     run_ym: str,
     horizon_months: int,
     service_z: float,
+    committed_orders: Optional[dict[str, "PlanLine"]] = None,
 ) -> list[PlanLine]:
-    """단일 SKU에 대한 R,S 발주계획 라인 생성"""
+    """단일 SKU에 대한 R,S 발주계획 라인 생성.
+    committed_orders: {order_ym: 기존 PlanLine} — 확정 발주는 재계산 없이 복사.
+    """
     tier = product.tier
     param: Optional[PlanningParam] = product.planning_param
 
@@ -168,42 +217,57 @@ def _plan_one_sku(
 
     # ── 롤링 시뮬레이션 ─────────────────────────────────────────────────────
     position = float(initial_position)
-    arrivals: dict[str, float] = {}
     lines: list[PlanLine] = []
+    locked = committed_orders or {}
 
     for i in range(horizon_months):
         order_ym = add_months(run_ym, i)
 
-        raw_order = target_S - position
-        order_qty = ceil_to_layer(raw_order, layer_boxes)
-
-        # 최소/최대 발주 단수 적용
-        if min_layers and order_qty > 0:
-            order_qty = max(order_qty, min_layers * layer_boxes)
-        if max_layers:
-            order_qty = min(order_qty, max_layers * layer_boxes)
-        if shelf_cap > 0:
-            order_qty = min(order_qty, shelf_cap)
-
-        if order_qty > 0:
-            order_layers = order_qty // layer_boxes
-            arrival_ym = add_months(order_ym, lead)
-            projected = int(position + order_qty - avg_demand * (review + lead))
-
+        if order_ym in locked:
+            # 확정 발주: 재계산 없이 원본 그대로 복사
+            orig = locked[order_ym]
             lines.append(PlanLine(
                 plan_run_id=plan_run_id,
                 product_id=product.product_id,
-                ep_id=ep_id,
+                ep_id=orig.ep_id,
                 order_ym=order_ym,
-                order_boxes=order_qty,
-                order_layers=order_layers,
-                expected_arrival_ym=arrival_ym,
-                projected_inv_end=max(0, projected),
-                is_committed=(i == 0),   # 당월 발주월만 committed
-                alert=feasibility_alert,
+                order_boxes=orig.order_boxes,
+                order_layers=orig.order_layers,
+                expected_arrival_ym=orig.expected_arrival_ym,
+                projected_inv_end=orig.projected_inv_end,
+                is_committed=True,
+                alert=orig.alert,
             ))
-            # 발주분을 포지션에 즉시 반영 (재고포지션 = 현재고 + 미착)
-            position += order_qty
+            position += orig.order_boxes
+        else:
+            raw_order = target_S - position
+            order_qty = ceil_to_layer(raw_order, layer_boxes)
+
+            # 최소/최대 발주 단수 적용
+            if min_layers and order_qty > 0:
+                order_qty = max(order_qty, min_layers * layer_boxes)
+            if max_layers:
+                order_qty = min(order_qty, max_layers * layer_boxes)
+            if shelf_cap > 0:
+                order_qty = min(order_qty, shelf_cap)
+
+            if order_qty > 0:
+                order_layers = order_qty // layer_boxes
+                arrival_ym = add_months(order_ym, lead)
+                projected = int(position + order_qty - avg_demand * (review + lead))
+                lines.append(PlanLine(
+                    plan_run_id=plan_run_id,
+                    product_id=product.product_id,
+                    ep_id=ep_id,
+                    order_ym=order_ym,
+                    order_boxes=order_qty,
+                    order_layers=order_layers,
+                    expected_arrival_ym=arrival_ym,
+                    projected_inv_end=max(0, projected),
+                    is_committed=False,
+                    alert=feasibility_alert,
+                ))
+                position += order_qty
 
         # 월 소비
         position = max(0, position - avg_demand)
@@ -268,6 +332,7 @@ def run_plan(
     demand_map = _load_demand_map(db, run_ym)
     inventory_map = _load_inventory_map(db)
     onorder_map = _load_onorder_map(db, run_ym)
+    committed_map = _load_committed_map(db, run_ym, horizon_months)
 
     # 활성 상품 전체 로드
     products = (
@@ -296,6 +361,7 @@ def run_plan(
             run_ym=run_ym,
             horizon_months=horizon_months,
             service_z=service_z,
+            committed_orders=committed_map.get(product.product_id),
         )
         for line in lines:
             db.add(line)

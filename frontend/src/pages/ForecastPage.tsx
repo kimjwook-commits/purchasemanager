@@ -4,11 +4,12 @@ import {
   IconPlayerPlay, IconCheck, IconAlertTriangle,
   IconSearch, IconChevronLeft, IconChevronRight, IconSnowflake,
   IconUpload, IconX, IconCircleCheck, IconCircleX,
+  IconLock, IconLockOpen, IconDownload, IconSun,
 } from '@tabler/icons-react'
 import {
   getPlanRuns, getPlanLines, getPlanSummary, runPlan, approvePlan,
-  getDemandActual, getInventoryLots, getProducts,
-  bulkUpsertDemandActual, registerInitialLots, updatePlanLine,
+  getDemandActual, getInventoryLots, getProducts, getForecastDemand,
+  bulkUpsertDemandActual, registerInitialLots, updatePlanLine, createPlanLine,
 } from '../api/api'
 import type {
   PlanRun, PlanLine, MonthSummary,
@@ -100,9 +101,10 @@ function eaPerBox(prod: { bottles_per_box?: number; volume_ml?: number | null })
   return 12
 }
 
-const TIER_LABEL: Record<string, string> = { cold: '냉장', ambient: '상온', room: '상냉장' }
+const TIER_LABEL: Record<string, string> = { cold: '생',   ambient: '일반', room: '상온' }
+const TIER_CLS:   Record<string, string> = { cold: 'chip-info', ambient: 'chip-default', room: 'chip-warning' }
 const N_MONTHS = 12
-const COL_PROD  = 192
+const COL_PROD  = 240
 const COL_SINV  = 82
 const COL_SALES = 68
 const COL_ORD   = 68
@@ -117,6 +119,7 @@ export default function ForecastPage() {
   const [lines, setLines]         = useState<PlanLine[]>([])
   const [summary, setSummary]     = useState<MonthSummary[]>([])
   const [demandData, setDemandData] = useState<DemandActualRead[]>([])
+  const [forecastData, setForecastData] = useState<{ product_code: string; ym: string; qty_boxes: number }[]>([])
   const [lots, setLots]           = useState<InvLotRead[]>([])
   const [products, setProducts]   = useState<Product[]>([])
   const [centerYm, setCenterYm]   = useState(todayYm)
@@ -124,10 +127,19 @@ export default function ForecastPage() {
   const [loading, setLoading]     = useState(true)
   const [running, setRunning]     = useState(false)
   const [showRunModal, setShowRunModal] = useState(false)
-  const [editCell, setEditCell]   = useState<{ productId: number; ym: string; planLineId: number } | null>(null)
+  const [editMode, setEditMode]   = useState(false)
+  const [editCell, setEditCell]   = useState<{ productId: number; ym: string; planLineId: number | null } | null>(null)
   const [editVal, setEditVal]     = useState('')
   const [runYm, setRunYm]         = useState(dayjs().format('YYYY-MM'))
   const scrollRef                 = useRef<HTMLDivElement>(null)
+
+  // ── 간편 재고 업로드 state ───────────────────────────────────────────────
+  const [simpleStockRows, setSimpleStockRows] = useState<{ product_code: string; qty_bottles: number; qty_boxes: number; matched: boolean; name_ja: string; zone_code: string }[]>([])
+  const simpleStockRef = useRef<HTMLInputElement>(null)
+
+  // ── 간편 출고실적 업로드 state ───────────────────────────────────────────
+  const [simpleActualRows, setSimpleActualRows] = useState<{ product_code: string; ym: string; qty_boxes: number; matched: boolean; name_ja: string }[]>([])
+  const simpleActualRef = useRef<HTMLInputElement>(null)
 
   // ── upload modal state ───────────────────────────────────────────────────
   const [showUpload, setShowUpload]     = useState(false)
@@ -154,17 +166,12 @@ export default function ForecastPage() {
   useEffect(() => { loadPlans() }, [])
 
   // ── 상품·재고·실출고는 플랜 선택과 무관하게 항상 로드 ────────────────────────
+  // 각 호출 독립 실행 — 하나 실패해도 나머지는 정상 로드
   useEffect(() => {
-    const ymFrom = addM(centerYm, -6)
-    Promise.all([
-      getDemandActual({ ym_from: ymFrom }),
-      getInventoryLots({ status: 'AVAILABLE' }),
-      getProducts({ size: 1000 }),
-    ]).then(([dRes, invRes, pRes]) => {
-      setDemandData(dRes.data ?? [])
-      setLots(invRes.data ?? [])
-      setProducts(pRes.data?.items ?? [])
-    })
+    getProducts({ size: 1000 }).then(r => setProducts(r.data?.items ?? []))
+    getInventoryLots({ status: 'AVAILABLE' }).then(r => setLots(r.data ?? []))
+    getDemandActual({ ym_from: addM(centerYm, -36) }).then(r => setDemandData(r.data ?? []))
+    getForecastDemand({ horizon: 12 }).then(r => setForecastData(r.data ?? []))
   }, [centerYm])
 
   // ── 플랜 선택 시 플랜라인·서머리만 로드 ──────────────────────────────────────
@@ -183,9 +190,9 @@ export default function ForecastPage() {
   const scroll = (d: 'left' | 'right') =>
     scrollRef.current?.scrollBy({ left: d === 'left' ? -280 : 280, behavior: 'smooth' })
 
-  // ── display months: centerYm-1 … centerYm+4 ──────────────────────────────
+  // ── display months: centerYm … centerYm+11 ───────────────────────────────
   const displayMonths = useMemo(
-    () => Array.from({ length: N_MONTHS }, (_, i) => addM(centerYm, i - 1)),
+    () => Array.from({ length: N_MONTHS }, (_, i) => addM(centerYm, i)),
     [centerYm],
   )
 
@@ -216,6 +223,16 @@ export default function ForecastPage() {
     })
     return m
   }, [products, demandMap])
+
+  // 예측 맵: product_code → ym → qty_boxes
+  const forecastMap = useMemo(() => {
+    const m = new Map<string, Map<string, number>>()
+    forecastData.forEach(d => {
+      if (!m.has(d.product_code)) m.set(d.product_code, new Map())
+      m.get(d.product_code)!.set(d.ym, d.qty_boxes)
+    })
+    return m
+  }, [forecastData])
 
   // plan lines by order_ym
   const orderByOym = useMemo(() => {
@@ -249,37 +266,39 @@ export default function ForecastPage() {
       : regular
 
     return filtered.map(prod => {
-      const startInv = invMap.get(prod.product_id) ?? 0
-      const avgDem   = avgDemandMap.get(prod.product_id) ?? 0
-      let runInv     = startInv
+      const startInv = invMap.get(prod.product_id) ?? 0   // 병수
+      const avgDem   = avgDemandMap.get(prod.product_id) ?? 0  // 박스 단위
+      const epb      = eaPerBox(prod)
+      let runInv     = startInv                            // 병수로 롤링
 
-      const months = displayMonths.map(ym => {
+      const months = displayMonths.map((ym, idx) => {
         const isPast    = ym < todayYm
         const isCur     = ym === centerYm
-        const isFcst    = ym > todayYm
+        const isFcst    = ym >= todayYm
 
-        // 출고: actual if available, else avg for future
-        const actualDem = demandMap.get(prod.product_id)?.get(ym)
-        const sales     = actualDem !== undefined ? actualDem : (isFcst ? avgDem : null)
-        const salesEst  = actualDem === undefined && isFcst   // estimated flag
+        // 출고: actual > 알고리즘예측 > 단순평균 순서로 적용
+        const actualDem   = demandMap.get(prod.product_id)?.get(ym)
+        const forecastDem = forecastMap.get(prod.product_code)?.get(ym)
+        const sales = actualDem !== undefined
+          ? actualDem
+          : (isFcst || isCur)
+            ? (forecastDem !== undefined ? forecastDem : avgDem)
+            : null
+        const salesEst  = actualDem === undefined && (isFcst || isCur)
 
-        // 발주 (orders placed this month)
         const ord = orderByOym.get(prod.product_id)?.get(ym) ?? null
 
-        // 재고 (running, only for current month onward)
-        let inv: number | null = null
-        if (!isPast) {
-          const arrival = arrivalMap.get(prod.product_id)?.get(ym) ?? 0
-          runInv = runInv + arrival - (sales ?? 0)
-          inv = runInv
-        }
+        // 재고(병수): 첫달=시작재고-출고, 이후=전월재고+전월발주*epb-출고
+        const arrival = idx === 0 ? 0 : (arrivalMap.get(prod.product_id)?.get(ym) ?? 0)
+        runInv = runInv + arrival * epb - (sales ?? 0) * epb
+        const inv = runInv
 
         return { ym, isPast, isCur, isFcst, sales, salesEst, ord, inv }
       })
 
       return { prod, startInv, months }
     })
-  }, [products, search, invMap, demandMap, avgDemandMap, orderByOym, arrivalMap,
+  }, [products, search, invMap, demandMap, avgDemandMap, forecastMap, orderByOym, arrivalMap,
       displayMonths, todayYm, centerYm])
 
   // ── totals (출고·재고=병수, 발주=박스수) ────────────────────────────────────
@@ -292,7 +311,7 @@ export default function ForecastPage() {
         const epb = eaPerBox(r.prod)
         sales += (m.sales ?? 0) * epb
         ord   += m.ord?.boxes ?? 0
-        if (m.inv !== null) { inv += Math.max(0, m.inv) * epb; invCount++ }
+        if (m.inv !== null) { inv += Math.max(0, m.inv); invCount++ }
       })
       return { ym, sales, ord, inv: invCount > 0 ? inv : null }
     })
@@ -300,9 +319,7 @@ export default function ForecastPage() {
 
   const totalStartInv = useMemo(() => {
     let total = 0
-    products.forEach(p => {
-      total += (invMap.get(p.product_id) ?? 0) * eaPerBox(p)
-    })
+    products.forEach(p => { total += invMap.get(p.product_id) ?? 0 })
     return total
   }, [invMap, products])
 
@@ -347,9 +364,10 @@ export default function ForecastPage() {
       const res = await bulkUpsertDemandActual(rows, true)
       const d   = res.data as { upserted?: number; skipped?: number }
       setUploadMsg({ ok: true, text: `완료: 등록/업데이트 ${d.upserted ?? 0}건, 미일치 ${d.skipped ?? 0}건` })
-      // reload demand data
-      const ymFrom = addM(centerYm, -6)
+      // reload demand data + re-run forecast
+      const ymFrom = addM(centerYm, -36)
       getDemandActual({ ym_from: ymFrom }).then(r => setDemandData(r.data ?? []))
+      getForecastDemand({ horizon: 12 }).then(r => setForecastData(r.data ?? []))
     } catch (err: unknown) {
       setUploadMsg({ ok: false, text: String(err instanceof Error ? err.message : err) })
     } finally { setUploading(false) }
@@ -381,6 +399,162 @@ export default function ForecastPage() {
     } finally { setUploading(false) }
   }
 
+  // ── 기초재고 템플릿 다운로드 ────────────────────────────────────────────────
+  const downloadStockTemplate = () => {
+    const regular = products.filter(p => !p.product_type || p.product_type === 'regular')
+    const headers = ['SKU코드', '기초재고(병수)']
+    const rows = regular.map(p => [p.product_code, ''])
+    const ws = XLSX.utils.aoa_to_sheet([headers, ...rows])
+    ws['!cols'] = [{ wch: 16 }, { wch: 14 }]
+    const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(wb, ws, '기초재고')
+    XLSX.writeFile(wb, `기초재고템플릿_${dayjs().format('YYYYMMDD')}.xlsx`)
+  }
+
+  // ── 출고실적 템플릿 다운로드 (피벗: 상품 세로 × 월 가로) ──────────────────
+  const downloadActualTemplate = () => {
+    const regular = products.filter(p => !p.product_type || p.product_type === 'regular')
+    // 최근 36개월 (당월 포함, 2024년 초부터 커버)
+    const months = Array.from({ length: 36 }, (_, i) => addM(todayYm, i - 35))
+    const headers = ['SKU코드', ...months]
+    const rows = regular.map(p => [p.product_code, ...months.map(() => '')])
+    const ws = XLSX.utils.aoa_to_sheet([headers, ...rows])
+    ws['!cols'] = [{ wch: 16 }, ...months.map(() => ({ wch: 10 }))]
+    const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(wb, ws, '출고실적')
+    XLSX.writeFile(wb, `출고실적템플릿_${dayjs().format('YYYYMMDD')}.xlsx`)
+  }
+
+  // ── 출고실적 파일 파싱 (피벗 형식) ──────────────────────────────────────
+  const handleActualTemplateFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]; if (!file) return
+    setUploadMsg(null)
+    try {
+      const buf = await file.arrayBuffer()
+      const wb  = XLSX.read(buf, { type: 'array' })
+      const ws  = wb.Sheets[wb.SheetNames[0]]
+      const raw = XLSX.utils.sheet_to_json<string[]>(ws, { header: 1, raw: false, defval: '' }) as string[][]
+      const hdr = raw[0]?.map(h => String(h).trim()) ?? []
+
+      // SKU코드 열
+      const codeIdx = hdr.findIndex(h => h.includes('SKU') || h.toLowerCase().includes('product') || h.includes('코드'))
+      if (codeIdx < 0) throw new Error('"SKU코드" 열을 찾을 수 없습니다')
+
+      // YYYY-MM 형식인 열들을 모두 찾아 월 컬럼으로 인식
+      const monthCols = hdr
+        .map((h, i) => ({ ym: h, i }))
+        .filter(({ ym }) => /^\d{4}-\d{2}$/.test(ym))
+      if (monthCols.length === 0) throw new Error('YYYY-MM 형식의 월 컬럼을 찾을 수 없습니다')
+
+      const productMap = new Map(products.map(p => [p.product_code, p]))
+      const parsed: typeof simpleActualRows = []
+
+      for (const row of raw.slice(1)) {
+        const product_code = String(row[codeIdx] ?? '').trim()
+        if (!product_code) continue
+        const prod = productMap.get(product_code)
+        for (const { ym, i } of monthCols) {
+          const qty_boxes = parseInt(String(row[i] ?? '').replace(/,/g, '')) || 0
+          if (qty_boxes > 0) {
+            parsed.push({
+              product_code,
+              ym,
+              qty_boxes,
+              matched: !!prod,
+              name_ja: prod?.name_ja ?? '—',
+            })
+          }
+        }
+      }
+      if (parsed.length === 0) throw new Error('등록할 데이터가 없습니다. 출고수량을 입력했는지 확인해주세요.')
+      setSimpleActualRows(parsed)
+    } catch (err) {
+      setUploadMsg({ ok: false, text: String(err instanceof Error ? err.message : err) })
+    }
+    e.target.value = ''
+  }
+
+  const handleRegisterSimpleActual = async () => {
+    const valid = simpleActualRows.filter(r => r.matched && r.qty_boxes > 0)
+    if (valid.length === 0) return
+    setUploading(true); setUploadMsg(null)
+    try {
+      const productMap = new Map(products.map(p => [p.product_code, p]))
+      const res = await bulkUpsertDemandActual(valid.map(r => {
+        const prod = productMap.get(r.product_code)
+        const epb  = prod ? eaPerBox(prod) : 1
+        return {
+          product_code: r.product_code,
+          ym: r.ym,
+          qty_boxes: Math.round(r.qty_boxes / epb),   // 병수 → 박스 변환
+        }
+      }), true)
+      const d = res.data
+      setUploadMsg({ ok: true, text: `완료: 등록/업데이트 ${d.upserted ?? 0}건, 건너뜀 ${d.skipped ?? 0}건` })
+      setSimpleActualRows([])
+      const ymFrom = addM(centerYm, -36)
+      getDemandActual({ ym_from: ymFrom }).then(r => setDemandData(r.data ?? []))
+      getForecastDemand({ horizon: 12 }).then(r => setForecastData(r.data ?? []))
+    } catch (err) {
+      setUploadMsg({ ok: false, text: String(err instanceof Error ? err.message : err) })
+    } finally { setUploading(false) }
+  }
+
+  // ── 간편 재고 파일 파싱 ─────────────────────────────────────────────────────
+  const handleSimpleStockFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]; if (!file) return
+    setUploadMsg(null)
+    try {
+      const buf = await file.arrayBuffer()
+      const wb  = XLSX.read(buf, { type: 'array' })
+      const ws  = wb.Sheets[wb.SheetNames[0]]
+      const raw = XLSX.utils.sheet_to_json<string[]>(ws, { header: 1, raw: false, defval: '' }) as string[][]
+      const hdr = raw[0]?.map(h => String(h).trim()) ?? []
+      const codeIdx = hdr.findIndex(h => h.includes('SKU') || h.toLowerCase().includes('product') || h.includes('코드'))
+      const qtyIdx  = hdr.findIndex(h => h.includes('기초재고') || h.includes('병수') || h.includes('재고') || h.includes('수량'))
+      if (codeIdx < 0 || qtyIdx < 0) throw new Error('"SKU코드"와 "기초재고(병수)" 열을 찾을 수 없습니다')
+      const productMap = new Map(products.map(p => [p.product_code, p]))
+      const parsed = raw.slice(1)
+        .map(r => ({ product_code: String(r[codeIdx] ?? '').trim(), qty_bottles: parseInt(String(r[qtyIdx] ?? '0').replace(/,/g, '')) || 0 }))
+        .filter(r => r.product_code)
+        .map(r => {
+          const prod = productMap.get(r.product_code)
+          return {
+            product_code: r.product_code,
+            qty_bottles: r.qty_bottles,
+            qty_boxes: r.qty_bottles,   // 병수 그대로 저장
+            matched: !!prod,
+            name_ja: prod?.name_ja ?? '—',
+            zone_code: prod?.tier_code === 'cold' ? 'COLD' : 'AMBIENT',
+          }
+        })
+      setSimpleStockRows(parsed)
+    } catch (err) {
+      setUploadMsg({ ok: false, text: String(err instanceof Error ? err.message : err) })
+    }
+    e.target.value = ''
+  }
+
+  const handleRegisterSimpleStock = async () => {
+    const rows = simpleStockRows.filter(r => r.matched && r.qty_bottles > 0)
+    if (rows.length === 0) return
+    setUploading(true); setUploadMsg(null)
+    try {
+      const res = await registerInitialLots(rows.map(r => ({
+        product_code: r.product_code,
+        zone_code: r.zone_code,
+        lot_no: `INIT-${r.product_code}-${dayjs().format('YYYYMM')}`,
+        qty_boxes: r.qty_boxes,
+        mfg_date: dayjs().format('YYYY-MM-DD'),
+      })))
+      setUploadMsg({ ok: true, text: `완료: 등록 ${res.data.created}건, 중복 건너뜀 ${res.data.skipped}건` })
+      setSimpleStockRows([])
+      getInventoryLots({ status: 'AVAILABLE' }).then(r => setLots(r.data ?? []))
+    } catch (err) {
+      setUploadMsg({ ok: false, text: String(err instanceof Error ? err.message : err) })
+    } finally { setUploading(false) }
+  }
+
   // ── handlers ─────────────────────────────────────────────────────────────
   const handleRunPlan = async () => {
     setRunning(true)
@@ -401,10 +575,19 @@ export default function ForecastPage() {
     const boxes = parseInt(editVal)
     if (isNaN(boxes) || boxes < 0) { setEditCell(null); return }
     try {
-      const res = await updatePlanLine(selected.plan_run_id, editCell.planLineId, { order_boxes: boxes })
-      setLines(prev => prev.map(l =>
-        l.plan_line_id === editCell.planLineId ? { ...l, order_boxes: res.data.order_boxes } : l
-      ))
+      if (editCell.planLineId !== null) {
+        const res = await updatePlanLine(selected.plan_run_id, editCell.planLineId, { order_boxes: boxes })
+        setLines(prev => prev.map(l =>
+          l.plan_line_id === editCell.planLineId ? { ...l, order_boxes: res.data.order_boxes } : l
+        ))
+      } else {
+        const res = await createPlanLine(selected.plan_run_id, {
+          product_id: editCell.productId,
+          order_ym: editCell.ym,
+          order_boxes: boxes,
+        })
+        setLines(prev => [...prev, res.data])
+      }
     } catch { /* 실패 시 원래 값 유지 */ }
     setEditCell(null)
   }
@@ -447,7 +630,7 @@ export default function ForecastPage() {
             </button>
           )}
           {/* Upload actual */}
-          <button className="btn" onClick={() => { setShowUpload(true); setParsedFile(null); setUploadMsg(null) }}>
+          <button className="btn" onClick={() => { setShowUpload(true); setParsedFile(null); setUploadMsg(null); setSimpleStockRows([]); setSimpleActualRows([]) }}>
             <IconUpload size={13} /> 실출고 업로드
           </button>
           {/* Run plan */}
@@ -478,6 +661,16 @@ export default function ForecastPage() {
               ))}
             </select>
           </div>
+          {/* Edit mode toggle */}
+          <button
+            className={editMode ? 'btn btn-warning' : 'btn'}
+            style={{ fontSize: 11, display: 'flex', alignItems: 'center', gap: 4 }}
+            onClick={() => { setEditMode(v => !v); setEditCell(null) }}
+            title={editMode ? '수정 모드 ON — 클릭하면 잠금' : '클릭하면 발주량 수정 가능'}
+          >
+            {editMode ? <IconLockOpen size={13} /> : <IconLock size={13} />}
+            {editMode ? '수정 ON' : '수정 잠금'}
+          </button>
           {/* Scroll buttons */}
           <button className="btn" style={{ padding: '3px 8px' }} onClick={() => scroll('left')}><IconChevronLeft size={14} /></button>
           <button className="btn" style={{ padding: '3px 8px' }} onClick={() => scroll('right')}><IconChevronRight size={14} /></button>
@@ -549,7 +742,6 @@ export default function ForecastPage() {
                   <th
                     rowSpan={2}
                     style={{
-                      position: 'sticky', left: COL_PROD, zIndex: 4,
                       background: 'var(--bg-secondary)',
                       borderRight: '2px solid var(--border)',
                       textAlign: 'right', paddingRight: 8,
@@ -618,7 +810,8 @@ export default function ForecastPage() {
                     </td>
                   </tr>
                 ) : rows.map(({ prod, startInv, months }) => {
-                  const hasNegInv = months.some(m => m.inv !== null && m.inv < 0)
+                  const nextYm = addM(centerYm, 1)
+                  const hasNegInv = months.some(m => m.ym === nextYm && m.inv !== null && m.inv < 0)
 
                   const epb = eaPerBox(prod)
                   return (
@@ -633,30 +826,34 @@ export default function ForecastPage() {
                         }}
                       >
                         <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
-                          {prod.tier_code === 'cold' && (
-                            <span className="chip chip-info" style={{ display: 'inline-flex', alignItems: 'center', gap: 2, fontSize: 9, padding: '1px 4px' }}>
-                              <IconSnowflake size={8} /> {TIER_LABEL.cold}
-                            </span>
-                          )}
-                          {prod.tier_code && prod.tier_code !== 'cold' && (
-                            <span className="chip chip-default" style={{ fontSize: 9, padding: '1px 4px' }}>
+                          {prod.tier_code && (
+                            <span
+                              className={`chip ${TIER_CLS[prod.tier_code] ?? 'chip-default'}`}
+                              style={{ display: 'inline-flex', alignItems: 'center', gap: 2, fontSize: 9, padding: '1px 4px' }}
+                            >
+                              {prod.tier_code === 'cold' && <IconSnowflake size={8} />}
+                              {prod.tier_code === 'room'  && <IconSun size={8} />}
                               {TIER_LABEL[prod.tier_code] ?? prod.tier_code}
                             </span>
                           )}
                           {hasNegInv && <IconAlertTriangle size={10} style={{ color: 'var(--text-danger)', flexShrink: 0 }} />}
                         </div>
-                        <div style={{ fontWeight: 500, fontSize: 12, marginTop: 2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        <div style={{ fontWeight: 500, fontSize: 12, marginTop: 2, wordBreak: 'break-word', lineHeight: 1.4 }}>
                           {prod.name_ja ?? prod.product_code}
+                          {prod.volume_ml && (
+                            <span style={{ fontSize: 10, color: 'var(--text-tertiary)', marginLeft: 4, fontWeight: 400 }}>
+                              {prod.volume_ml}ml
+                            </span>
+                          )}
                         </div>
                         <div style={{ fontSize: 10, color: 'var(--text-tertiary)' }}>
                           {prod.product_code}
                         </div>
                       </td>
 
-                      {/* Starting inventory — sticky */}
+                      {/* Starting inventory */}
                       <td
                         style={{
-                          position: 'sticky', left: COL_PROD, zIndex: 2,
                           background: 'var(--bg-secondary)',
                           borderRight: '2px solid var(--border)',
                           textAlign: 'right', paddingRight: 8,
@@ -664,7 +861,7 @@ export default function ForecastPage() {
                         }}
                       >
                         {startInv > 0
-                          ? <>{(startInv * epb).toLocaleString()}<span style={{ fontSize: 9, color: 'var(--text-tertiary)', marginLeft: 2 }}>병</span></>
+                          ? <>{startInv.toLocaleString()}<span style={{ fontSize: 9, color: 'var(--text-tertiary)', marginLeft: 2 }}>병</span></>
                           : <span style={{ color: 'var(--text-tertiary)' }}>—</span>}
                       </td>
 
@@ -730,17 +927,19 @@ export default function ForecastPage() {
                                 key={ym + '-o'}
                                 className="num"
                                 onClick={() => {
-                                  if (ord) {
-                                    setEditCell({ productId: prod.product_id, ym, planLineId: ord.planLineId })
-                                    setEditVal(String(ord.boxes))
-                                  }
+                                  if (!editMode || isPast || !selected) return
+                                  setEditCell({ productId: prod.product_id, ym, planLineId: ord?.planLineId ?? null })
+                                  setEditVal(String(ord?.boxes ?? ''))
                                 }}
                                 style={{
                                   paddingRight: 8,
-                                  background: monthBg,
-                                  color: ord ? 'var(--text-info)' : undefined,
+                                  background: isCur && ord ? 'rgba(var(--rgb-success,34,197,94),0.06)' : monthBg,
+                                  color: ord
+                                    ? isCur ? 'var(--text-success)' : 'var(--text-info)'
+                                    : undefined,
                                   fontWeight: ord ? 600 : undefined,
-                                  cursor: ord ? 'text' : undefined,
+                                  cursor: editMode && !isPast && selected ? 'text' : undefined,
+                                  outline: editMode && !isPast && selected && !ord ? '1px dashed var(--border)' : undefined,
                                 }}
                               >
                                 {ord ? ord.boxes.toLocaleString() : <span style={{ color: 'var(--text-tertiary)' }}>—</span>}
@@ -762,9 +961,7 @@ export default function ForecastPage() {
                                 fontWeight: invNeg ? 600 : undefined,
                               }}
                             >
-                              {inv === null
-                                ? <span style={{ color: 'var(--text-tertiary)' }}>—</span>
-                                : (inv * epb).toLocaleString()}
+                              {inv.toLocaleString()}
                             </td>
                           </>
                         )
@@ -788,7 +985,6 @@ export default function ForecastPage() {
                     </td>
                     <td
                       style={{
-                        position: 'sticky', left: COL_PROD, zIndex: 2,
                         background: 'var(--bg-secondary)',
                         borderRight: '2px solid var(--border)',
                         textAlign: 'right', paddingRight: 8,
@@ -833,7 +1029,7 @@ export default function ForecastPage() {
           >
             <div className="modal-header">
               <span className="modal-title">실출고·재고 업로드</span>
-              <button className="btn" style={{ padding: '2px 8px' }} onClick={() => setShowUpload(false)}>
+              <button className="btn" style={{ padding: '2px 8px' }} onClick={() => { setShowUpload(false); setSimpleStockRows([]); setSimpleActualRows([]) }}>
                 <IconX size={14} />
               </button>
             </div>
@@ -861,11 +1057,158 @@ export default function ForecastPage() {
             {/* Tab description */}
             <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginBottom: 12, lineHeight: 1.6 }}>
               {uploadTab === 'actual'
-                ? '월별 재고현황 파일 (ESZ019R_DATEE.csv 등)을 업로드하면 출고수량(EA)을 EA/BOX로 나누어 DemandActual 박스 수로 등록합니다.'
-                : '파일의 C/T(잔여재고 박스수) 열을 읽어 기초 재고(InventoryLot)를 등록합니다. 냉장 상품은 COLD존, 나머지는 AMBIENT존 자동 배정.'}
+                ? '상품(세로) × 월(가로) 피벗 형식 템플릿을 다운로드해 해당 셀에 출고수량(병수)를 입력한 뒤 업로드하세요. 입력된 셀만 등록됩니다.'
+                : '엑셀 템플릿을 다운로드해 기초재고(병수)를 기재한 뒤 업로드하세요. 냉장 상품 → COLD존, 나머지 → AMBIENT존 자동 배정.'}
             </div>
 
-            {/* File picker */}
+            {/* 출고실적 간편 업로드 (actual 탭) */}
+            {uploadTab === 'actual' && (
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 10 }}>
+                  <button className="btn btn-info" style={{ fontSize: 12 }} onClick={downloadActualTemplate}>
+                    <IconDownload size={13} /> 엑셀 템플릿 다운로드
+                  </button>
+                  <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
+                    상품 세로 × 월 가로 형식 — 최근 12개월 포함, 해당 셀에 병수 입력
+                  </span>
+                </div>
+
+                <input ref={simpleActualRef} type="file" accept=".xlsx,.xls,.csv" style={{ display: 'none' }} onChange={handleActualTemplateFile} />
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 10 }}>
+                  <button className="btn btn-primary" onClick={() => simpleActualRef.current?.click()}>
+                    <IconUpload size={13} /> 파일 선택
+                  </button>
+                  <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>.xlsx / .xls / .csv 지원</span>
+                </div>
+
+                {simpleActualRows.length > 0 && (
+                  <>
+                    <div style={{ fontSize: 12, marginBottom: 6 }}>
+                      파싱 완료 —
+                      총 <strong>{simpleActualRows.length}</strong>행 /
+                      매칭 <strong style={{ color: 'var(--text-success)' }}>{simpleActualRows.filter(r => r.matched).length}</strong>건 /
+                      미매칭 <strong style={{ color: 'var(--text-danger)' }}>{simpleActualRows.filter(r => !r.matched).length}</strong>건
+                    </div>
+                    <div style={{ maxHeight: 220, overflowY: 'auto', border: '0.5px solid var(--border)', borderRadius: 6, marginBottom: 10 }}>
+                      <table className="pm-table" style={{ width: '100%', fontSize: 11 }}>
+                        <thead>
+                          <tr>
+                            <th style={{ paddingLeft: 8, width: 100 }}>SKU코드</th>
+                            <th>상품명</th>
+                            <th style={{ textAlign: 'center', width: 80 }}>년월</th>
+                            <th style={{ textAlign: 'right', paddingRight: 8, width: 72 }}>병수</th>
+                            <th style={{ textAlign: 'center', width: 48 }}>매칭</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {simpleActualRows.map((r, i) => (
+                            <tr key={i} style={{ opacity: r.matched ? 1 : 0.45 }}>
+                              <td style={{ paddingLeft: 8, fontFamily: 'monospace', fontSize: 10 }}>{r.product_code}</td>
+                              <td style={{ maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.name_ja}</td>
+                              <td style={{ textAlign: 'center', fontSize: 11 }}>{r.ym}</td>
+                              <td className="num" style={{ paddingRight: 8, fontWeight: 600 }}>{r.qty_boxes > 0 ? r.qty_boxes : <span style={{ color: 'var(--text-tertiary)' }}>—</span>}</td>
+                              <td style={{ textAlign: 'center' }}>
+                                {r.matched ? <IconCircleCheck size={13} color="var(--text-success)" /> : <IconCircleX size={13} color="var(--text-danger)" />}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    <div className="modal-footer" style={{ padding: 0, marginBottom: 12 }}>
+                      <button className="btn" onClick={() => setSimpleActualRows([])}>초기화</button>
+                      <button
+                        className="btn btn-primary"
+                        disabled={uploading || simpleActualRows.filter(r => r.matched && r.qty_boxes > 0).length === 0}
+                        onClick={handleRegisterSimpleActual}
+                      >
+                        {uploading ? '등록 중…' : `출고실적 등록 (${simpleActualRows.filter(r => r.matched && r.qty_boxes > 0).length}건)`}
+                      </button>
+                    </div>
+                  </>
+                )}
+
+                <div style={{ borderTop: '1px dashed var(--border)', paddingTop: 12, marginTop: 4 }}>
+                  <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginBottom: 8 }}>또는 재고현황 파일(ESZ019R) 형식으로 업로드</div>
+                </div>
+              </div>
+            )}
+
+            {/* 기초 재고 간편 업로드 (stock 탭) */}
+            {uploadTab === 'stock' && (
+              <div style={{ marginBottom: 16 }}>
+                {/* 템플릿 다운로드 */}
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 10 }}>
+                  <button className="btn btn-info" style={{ fontSize: 12 }} onClick={downloadStockTemplate}>
+                    <IconDownload size={13} /> 엑셀 템플릿 다운로드
+                  </button>
+                  <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
+                    다운로드 → 기초재고(박스수) 열 기재 → 아래에 업로드
+                  </span>
+                </div>
+
+                {/* 간편 파일 업로드 */}
+                <input ref={simpleStockRef} type="file" accept=".xlsx,.xls,.csv" style={{ display: 'none' }} onChange={handleSimpleStockFile} />
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 10 }}>
+                  <button className="btn btn-primary" onClick={() => simpleStockRef.current?.click()}>
+                    <IconUpload size={13} /> 파일 선택
+                  </button>
+                  <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>.xlsx / .xls / .csv 지원</span>
+                </div>
+
+                {/* 간편 파싱 결과 프리뷰 */}
+                {simpleStockRows.length > 0 && (
+                  <>
+                    <div style={{ fontSize: 12, marginBottom: 6 }}>
+                      파싱 완료 —
+                      매칭 <strong style={{ color: 'var(--text-success)' }}>{simpleStockRows.filter(r => r.matched).length}</strong>건 /
+                      미매칭 <strong style={{ color: 'var(--text-danger)' }}>{simpleStockRows.filter(r => !r.matched).length}</strong>건 /
+                      재고 0 <strong style={{ color: 'var(--text-tertiary)' }}>{simpleStockRows.filter(r => r.qty_bottles === 0).length}</strong>건
+                    </div>
+                    <div style={{ maxHeight: 220, overflowY: 'auto', border: '0.5px solid var(--border)', borderRadius: 6, marginBottom: 10 }}>
+                      <table className="pm-table" style={{ width: '100%', fontSize: 11 }}>
+                        <thead>
+                          <tr>
+                            <th style={{ paddingLeft: 8, width: 100 }}>SKU코드</th>
+                            <th>상품명</th>
+                            <th style={{ textAlign: 'right', paddingRight: 8, width: 80 }}>기초재고(병)</th>
+                            <th style={{ textAlign: 'center', width: 48 }}>매칭</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {simpleStockRows.map((r, i) => (
+                            <tr key={i} style={{ opacity: r.matched ? 1 : 0.45 }}>
+                              <td style={{ paddingLeft: 8, fontFamily: 'monospace', fontSize: 10 }}>{r.product_code}</td>
+                              <td style={{ maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.name_ja}</td>
+                              <td className="num" style={{ paddingRight: 8, fontWeight: 600 }}>{r.qty_bottles > 0 ? r.qty_bottles.toLocaleString() : <span style={{ color: 'var(--text-tertiary)' }}>—</span>}</td>
+                              <td style={{ textAlign: 'center' }}>
+                                {r.matched ? <IconCircleCheck size={13} color="var(--text-success)" /> : <IconCircleX size={13} color="var(--text-danger)" />}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    <div className="modal-footer" style={{ padding: 0, marginBottom: 12 }}>
+                      <button className="btn" onClick={() => setSimpleStockRows([])}>초기화</button>
+                      <button
+                        className="btn btn-primary"
+                        disabled={uploading || simpleStockRows.filter(r => r.matched && r.qty_bottles > 0).length === 0}
+                        onClick={handleRegisterSimpleStock}
+                      >
+                        {uploading ? '등록 중…' : `기초 재고 등록 (${simpleStockRows.filter(r => r.matched && r.qty_bottles > 0).length}건)`}
+                      </button>
+                    </div>
+                  </>
+                )}
+
+                <div style={{ borderTop: '1px dashed var(--border)', paddingTop: 12, marginTop: 4 }}>
+                  <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginBottom: 8 }}>또는 재고현황 파일(ESZ019R) 형식으로 업로드</div>
+                </div>
+              </div>
+            )}
+
+            {/* File picker (ESZ019R 형식 / actual 탭) */}
             <input
               ref={fileInputRef}
               type="file"
@@ -874,8 +1217,8 @@ export default function ForecastPage() {
               onChange={handleFileChange}
             />
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12 }}>
-              <button className="btn btn-primary" onClick={() => fileInputRef.current?.click()}>
-                <IconUpload size={13} /> 파일 선택
+              <button className="btn" onClick={() => fileInputRef.current?.click()}>
+                <IconUpload size={13} /> {uploadTab === 'stock' ? 'ESZ019R 파일 선택' : '파일 선택'}
               </button>
               <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
                 .csv, .xlsx, .xls 지원 (한국어 EUC-KR/UTF-8 자동 인식)
