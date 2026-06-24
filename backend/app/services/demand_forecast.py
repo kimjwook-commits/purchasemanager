@@ -272,19 +272,18 @@ def run_demand_forecast(
             if S_clean[pc][cur_y].get(m, 0.0) > 0 and w.get(m, 0.0) > 0
         ]
         if cur_months:
-            L[pc] = statistics.mean(
-                S_clean[pc][cur_y][m] / w[m] for m in cur_months
-            )
+            deseason = [S_clean[pc][cur_y][m] / w[m] for m in cur_months]
+            # median 사용 — 단일 이상달(예: 3월 급증)이 기준선을 끌어올리지 않도록
+            L[pc] = statistics.median(deseason)
         else:
-            # fallback: 전년 비계절화 평균 × (1 + g_co)
+            # fallback: 전년 비계절화 median × (1 + g_co)
             prev_months = [
                 m for m in range(1, 13)
                 if S_clean[pc][prev_y].get(m, 0.0) > 0 and w.get(m, 0.0) > 0
             ]
             if prev_months:
-                L[pc] = statistics.mean(
-                    S_clean[pc][prev_y][m] / w[m] for m in prev_months
-                ) * (1 + g_co)
+                deseason_prev = [S_clean[pc][prev_y][m] / w[m] for m in prev_months]
+                L[pc] = statistics.median(deseason_prev) * (1 + g_co)
                 flags[pc].append('fallback_prevyear')
             else:
                 L[pc] = 0.0
@@ -349,7 +348,8 @@ def run_demand_forecast(
         if not recent_vals:
             continue  # 최근 실적 없으면 알고리즘 결과 그대로 유지
 
-        recent_avg = statistics.mean(recent_vals)
+        # median 사용 — 단일 이상달이 상한을 끌어올리지 않도록
+        recent_avg = statistics.median(recent_vals)
 
         for fym in list(result[pc].keys()):
             fm          = int(fym[5:7])
