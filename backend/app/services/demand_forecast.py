@@ -332,4 +332,30 @@ def run_demand_forecast(
             pc_result[fym] = max(0, round(val))
         result[pc] = pc_result
 
+    # ── C5.5: 최근 3개월 단순예측과 비교 — 편차 작은 쪽 선택 ─────────────────
+    # 단순예측 = 최근 3개월 S_clean 평균 × w[m]
+    # 알고리즘 예측이 단순예측보다 높으면 단순예측으로 대체 (과탐지 방지)
+    recent_3_yms = [_add_ym(today_ym, -(i + 1)) for i in range(3)]
+
+    for pc in list(result.keys()):
+        # 최근 3개월 S_clean 비영값 수집
+        recent_vals = []
+        for rym in recent_3_yms:
+            ry, rm = int(rym[:4]), int(rym[5:7])
+            v = S_clean[pc][ry].get(rm, 0.0)
+            if v > 0:
+                recent_vals.append(v)
+
+        if not recent_vals:
+            continue  # 최근 실적 없으면 알고리즘 결과 그대로 유지
+
+        recent_avg = statistics.mean(recent_vals)
+
+        for fym in list(result[pc].keys()):
+            fm          = int(fym[5:7])
+            simple_fcst = recent_avg * w.get(fm, 1.0)
+            algo_fcst   = result[pc][fym]
+            # 두 예측의 편차가 작은 쪽(= 낮은 값) 선택
+            result[pc][fym] = min(algo_fcst, max(0, round(simple_fcst)))
+
     return result
